@@ -143,7 +143,7 @@ let compute_regions_hierarchy_for_sig (span : Meta.span option) (crate : crate)
         (* Explore the generics *)
         explore_generics outer generics
     | TVar _ | TLiteral _ | TNever -> ()
-    | TRef (r, ty, _) ->
+    | TRef (r, ty, _, _) ->
         (* Add the constraints for r *)
         add_edges ~long:r ~shorts:outer;
         (* Add r to the outer regions *)

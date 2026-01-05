@@ -876,7 +876,7 @@ let eval_binary_op (config : config) (span : Meta.span) (binop : binop)
 (** Evaluate an rvalue which creates a reference (i.e., an rvalue which is `&p`
     or `&mut p` or `&two-phase p`) *)
 let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
-    (bkind : borrow_kind) (ctx : eval_ctx) :
+    (bkind : borrow_kind) (view : view_field list option) (ctx : eval_ctx) :
     tvalue * eval_ctx * (SymbolicAst.expr -> SymbolicAst.expr) =
   match bkind with
   | BUniqueImmutable ->
@@ -925,7 +925,7 @@ let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
         | BTwoPhaseMut -> RMut
         | _ -> [%craise] span "Unreachable"
       in
-      let rv_ty = TRef (RErased, v.ty, ref_kind) in
+      let rv_ty = TRef (RErased, v.ty, ref_kind, view) in
       let bc =
         match bkind with
         | BShared | BShallow ->
@@ -947,7 +947,7 @@ let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
       in
       (* Compute the rvalue - wrap the value in a mutable borrow with a fresh id *)
       let bid = ctx.fresh_borrow_id () in
-      let rv_ty = TRef (RErased, v.ty, RMut) in
+      let rv_ty = TRef (RErased, v.ty, RMut, view) in
       let rv : tvalue = { value = VBorrow (VMutBorrow (bid, v)); ty = rv_ty } in
       (* Compute the loan value with which to replace the value at place p *)
       let nv = { v with value = VLoan (VMutLoan bid) } in
@@ -1055,8 +1055,8 @@ let eval_rvalue_not_global (config : config) (span : Meta.span)
   (* Delegate to the proper auxiliary function *)
   match rvalue with
   | Use op -> wrap_in_result (eval_operand config span op ctx)
-  | RvRef (p, bkind, _) ->
-      wrap_in_result (eval_rvalue_ref config span p bkind ctx)
+  | RvRef (p, bkind, _, view) ->
+      wrap_in_result (eval_rvalue_ref config span p bkind view ctx)
   | UnaryOp (unop, op) -> eval_unary_op config span unop op ctx
   | BinaryOp (binop, op1, op2) -> eval_binary_op config span binop op1 op2 ctx
   | Aggregate (aggregate_kind, ops) ->

@@ -40,7 +40,8 @@ let rec apply_proj_borrows_on_shared_borrow (span : Meta.span) (ctx : eval_ctx)
         in
         List.concat proj_fields
     | VBottom, _ -> [%craise] span "Unreachable"
-    | VBorrow bc, TRef (r, ref_ty, kind) ->
+    | VBorrow bc, TRef (r, ref_ty, kind, _view) ->
+        (* TODO(view): Add view support. *)
         (* Retrieve the bid of the borrow and the asb of the projected borrowed value *)
         let bid, asb =
           (* Not in the set: dive *)
@@ -118,7 +119,8 @@ let rec apply_proj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
           in
           AAdt { variant_id = adt.variant_id; fields = proj_fields }
       | VBottom, _ -> [%craise] span "Unreachable"
-      | VBorrow bc, TRef (r, ref_ty, kind) ->
+      | VBorrow bc, TRef (r, ref_ty, kind, _view) ->
+          (* TODO(view): Add view support. *)
           if
             (* Check if the region is in the set of projected regions (note that
              * we never project over static regions) *)
@@ -252,7 +254,8 @@ let rec apply_eproj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
           in
           EAdt { variant_id = adt.variant_id; fields = proj_fields }
       | VBottom, _ -> [%craise] span "Unreachable"
-      | VBorrow bc, TRef (r, ref_ty, kind) ->
+      | VBorrow bc, TRef (r, ref_ty, kind, _view) ->
+          (* TODO(view): Add view support. *)
           if
             (* Check if the region is in the set of projected regions (note that
              * we never project over static regions) *)
@@ -391,7 +394,8 @@ let apply_proj_loans_on_symbolic_expansion (span : Meta.span)
             fields field_types
         in
         (AAdt { variant_id; fields }, original_sv_ty)
-    | SeMutRef (bid, spc), TRef (r, ref_ty, RMut) ->
+    | SeMutRef (bid, spc), TRef (r, ref_ty, RMut, _view) ->
+        (* TODO(view): Add view support. *)
         (* Sanity check *)
         [%sanity_check] span (spc.sv_ty = ref_ty);
         (* Apply the projector to the borrowed value *)
@@ -411,7 +415,8 @@ let apply_proj_loans_on_symbolic_expansion (span : Meta.span)
             if ty_has_regions_in_set regions ref_ty then Some bid else None
           in
           (ALoan (AIgnoredMutLoan (opt_bid, child_av)), ref_ty)
-    | SeSharedRef (bid, spc), TRef (r, ref_ty, RShared) ->
+    | SeSharedRef (bid, spc), TRef (r, ref_ty, RShared, _view) ->
+        (* TODO(view): Add view support. *)
         (* Sanity check *)
         [%sanity_check] span (spc.sv_ty = ref_ty);
         (* Apply the projector to the borrowed value *)
@@ -454,7 +459,8 @@ let apply_eproj_loans_on_symbolic_expansion (span : Meta.span)
             fields field_types
         in
         (EAdt { variant_id; fields }, original_sv_ty)
-    | SeMutRef (bid, spc), TRef (r, ref_ty, RMut) ->
+    | SeMutRef (bid, spc), TRef (r, ref_ty, RMut, _view) ->
+        (* TODO(view): Add view support. *)
         (* Sanity check *)
         [%sanity_check] span (spc.sv_ty = ref_ty);
         (* Apply the projector to the borrowed value *)
@@ -474,7 +480,7 @@ let apply_eproj_loans_on_symbolic_expansion (span : Meta.span)
             if ty_has_regions_in_set regions ref_ty then Some bid else None
           in
           (ELoan (EIgnoredMutLoan (opt_bid, child_av)), ref_ty)
-    | SeSharedRef (_, _), TRef (_, _, RShared) ->
+    | SeSharedRef (_, _), TRef (_, _, RShared, _) ->
         (* We ignore shared borrows/loans in the abstraction expressions *)
         (EIgnored, proj_ty)
     | _ -> [%craise] span "Unreachable"

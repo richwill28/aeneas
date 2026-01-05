@@ -375,7 +375,7 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
    * places.
    *)
   let aloan_get_expected_child_type (ty : ty) : ty =
-    let _, ty, _ = ty_get_ref ty in
+    let _, ty, _, _ = ty_get_ref ty in
     ty
   in
   (* The types with erased regions of the symbolic values that we find *)
@@ -472,7 +472,8 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
           | (TSlice | TStr), _, _, _, _ -> [%craise] span "Unexpected"
           | _ -> [%craise] span "Erroneous type")
       | VBottom, _ -> (* Nothing to check *) ()
-      | VBorrow bc, TRef (_, ref_ty, rkind) -> (
+      | VBorrow bc, TRef (_, ref_ty, rkind, _rview) -> (
+          (* TODO(view): Add view support. *)
           match (bc, rkind) with
           | VSharedBorrow (bid, _), RShared | VReservedMutBorrow (bid, _), RMut
             -> (
@@ -581,7 +582,8 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
           | TBox, [ boxed_value ], [], [ boxed_ty ], [] ->
               [%sanity_check] span (boxed_value.ty = boxed_ty)
           | _ -> [%craise] span "Erroneous type")
-      | ABorrow bc, TRef (region, ref_ty, rkind) -> (
+      | ABorrow bc, TRef (region, ref_ty, rkind, _rview) -> (
+          (* TODO(view): Add view support. *)
           let abs = Option.get info in
           (* Check the borrow content *)
           match (bc, rkind) with
@@ -616,7 +618,7 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
           | AMutLoan (_, bid, child_av) | AIgnoredMutLoan (Some bid, child_av)
             -> (
               (* Check that the region is owned by the abstraction *)
-              let region, _, _ = ty_as_ref aty in
+              let region, _, _, _ = ty_as_ref aty in
               begin
                 match lc with
                 | AMutLoan _ ->
@@ -643,7 +645,7 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
           | ASharedLoan (_, _, sv, child_av) | AEndedSharedLoan (sv, child_av)
             ->
               (* Check that the region is owned by the abstraction *)
-              let region, _, _ = ty_as_ref aty in
+              let region, _, _, _ = ty_as_ref aty in
               [%sanity_check] span (region_is_owned abs region);
               let borrowed_aty = aloan_get_expected_child_type aty in
               [%sanity_check] span
@@ -653,7 +655,7 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
           | AEndedMutLoan { given_back; child; given_back_meta = _ }
           | AEndedIgnoredMutLoan { given_back; child; given_back_meta = _ } ->
               (* Check that the region is owned by the abstraction *)
-              let region, _, _ = ty_as_ref aty in
+              let region, _, _, _ = ty_as_ref aty in
               begin
                 match lc with
                 | AEndedMutLoan _ ->

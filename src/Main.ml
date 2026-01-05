@@ -54,6 +54,10 @@ let add_activated_loggers level (name_list : string) =
   let names = String.split_on_char ',' name_list in
   activated_loggers := List.map (fun n -> (level, n)) names @ !activated_loggers
 
+let activate_all_loggers level =
+  let all_names = Collections.StringMap.keys !Logging.loggers in
+  activated_loggers := List.map (fun n -> (level, n)) all_names @ !activated_loggers
+
 let marked_ids : string list ref = ref []
 
 let add_marked_ids (ids : string) =
@@ -149,10 +153,16 @@ let () =
          existing loggers are: {"
         ^ String.concat ", " (Collections.StringMap.keys !loggers)
         ^ "}" );
+      ( "-log-all",
+        Arg.Unit (fun () -> activate_all_loggers EL.Trace),
+        " Activate trace log for all loggers" );
       ( "-log-debug",
         Arg.String (add_activated_loggers EL.Debug),
         " Same as '-log' but sets the level to the more verbose 'debug' rather \
          than 'trace'" );
+      ( "-log-debug-all",
+        Arg.Unit (fun () -> activate_all_loggers EL.Debug),
+        " Activate debug log for all loggers" );
       ( "-log-error",
         Arg.String (add_activated_loggers EL.Error),
         " Activate error log for a given logger designated by its name. It is \

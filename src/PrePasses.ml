@@ -596,7 +596,7 @@ let remove_shallow_borrows_storage_live_dead (crate : crate) (f : fun_decl) :
       match st.kind with
       | Assign (p, rv) -> (
           match (p.kind, rv) with
-          | PlaceLocal var_id, RvRef (_, BShallow, _) ->
+          | PlaceLocal var_id, RvRef (_, BShallow, _, _) ->
               (* Filter *)
               filtered := LocalId.Set.add var_id !filtered;
               []
@@ -760,7 +760,7 @@ let decompose_str_borrows (_ : crate) (f : fun_decl) : fun_decl =
                 match (cv.kind, cv.ty) with
                 | ( CLiteral (VStr str),
                     TRef
-                      (_, (TAdt { id = TBuiltin TStr; _ } as str_ty), ref_kind)
+                      (_, (TAdt { id = TBuiltin TStr; _ } as str_ty), ref_kind, _)
                   ) ->
                     (* We need to introduce intermediate assignments *)
                     (* First the string initialization *)
@@ -806,7 +806,8 @@ let decompose_str_borrows (_ : crate) (f : fun_decl) : fun_decl =
                         RvRef
                           ( { kind = PlaceLocal local_id; ty = str_ty },
                             bkind,
-                            str_len )
+                            str_len,
+                            None )
                       in
                       let lv = { kind = PlaceLocal nlocal_id; ty = cv.ty } in
                       let st =
@@ -932,7 +933,7 @@ let decompose_global_accesses (crate : crate) (f : fun_decl) : fun_decl =
 
               method! visit_PlaceGlobal ty gref =
                 (* Compute the type of the reference *)
-                let ref_ty = TRef (RErased, ty, RShared) in
+                let ref_ty = TRef (RErased, ty, RShared, None) in
 
                 (* Introduce the intermediate reference *)
                 let local_id =
@@ -954,7 +955,8 @@ let decompose_global_accesses (crate : crate) (f : fun_decl) : fun_decl =
                             RvRef
                               ( { kind = PlaceGlobal gref; ty },
                                 BShared,
-                                metadata ) );
+                                metadata,
+                                None ) );
                       comments_before = [];
                     }
                   in

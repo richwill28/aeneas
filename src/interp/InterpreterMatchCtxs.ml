@@ -318,12 +318,14 @@ let rec match_types (span : Meta.span) (ctx0 : eval_ctx) (ctx1 : eval_ctx)
       [%sanity_check] span (lty0 = lty1);
       ty0
   | TNever, TNever -> ty0
-  | TRef (r0, ty0, k0), TRef (r1, ty1, k1) ->
+  | TRef (r0, ty0, k0, _v0), TRef (r1, ty1, k1, _v1) ->
+      (* TODO(view): Add view support. *)
       let r = match_regions r0 r1 in
       let ty = match_rec ty0 ty1 in
       [%sanity_check] span (k0 = k1);
       let k = k0 in
-      TRef (r, ty, k)
+      (* TODO(view): Add view support. *)
+      TRef (r, ty, k, None)
   | _ -> match_distinct_types ty0 ty1
 
 module MakeMatcher (M : PrimMatcher) : Matcher = struct
@@ -810,7 +812,8 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
                       ABorrow
                         (ASharedBorrow
                            (PNone, lid, ctx0.fresh_shared_borrow_id ()));
-                    ty = TRef (RVar (Free rid), v0.ty, RShared);
+                    (* TODO(view): Add view support. *)
+                    ty = TRef (RVar (Free rid), v0.ty, RShared, None);
                   }
                 in
                 { abs with avalues = sb :: abs.avalues })
@@ -840,7 +843,8 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
 
       let lid = ctx0.fresh_borrow_id () in
       if tvalue_has_mutable_loans v0 || tvalue_has_mutable_loans v1 then (
-        let ref_ty = mk_ref_ty (RVar (Free rid)) ty RMut in
+        (* TODO(view): Add view support. *)
+        let ref_ty = mk_ref_ty (RVar (Free rid)) ty RMut None in
         let av : tavalue =
           let value =
             ABorrow (AMutBorrow (PNone, lid, mk_aignored span ty None))
@@ -921,8 +925,9 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
       let bid2 = ctx0.fresh_borrow_id () in
 
       (* Update the type of the shared loan to use the fresh region *)
-      let _, bv_ty, kind = ty_as_ref ty in
-      let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind in
+      (* TODO(view): Add view support. *)
+      let _, bv_ty, kind, _view = ty_as_ref ty in
+      let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind None in
 
       (* Generate the avalues for the abstraction *)
       let mk_aborrow (pm : proj_marker) (bid : borrow_id)
@@ -1059,11 +1064,12 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
       let bid2 = ctx0.fresh_borrow_id () in
 
       (* [bv] is the result of the join  *)
-      let _, bv_ty, kind = ty_as_ref ty in
+      (* TODO(view): Add view support. *)
+      let _, bv_ty, kind, _view = ty_as_ref ty in
       let sv = bv in
 
-      let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind in
-
+      (* TODO(view): Add view support. *)
+      let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind None in
       (* Generate the avalues for the abstraction *)
       let mk_aborrow (pm : proj_marker) (bid : borrow_id) (bv : tvalue) :
           tavalue =
@@ -1158,7 +1164,8 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
 
       let kind = RShared in
       let bv_ty = ty in
-      let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind in
+      (* TODO(view): Add view support. *)
+      let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind None in
 
       let borrow_av =
         let ty = borrow_ty in
@@ -1225,7 +1232,8 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
 
       let kind = RMut in
       let bv_ty = ty in
-      let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind in
+      (* TODO(view): Add view support. *)
+      let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind None in
 
       let borrow_av =
         let ty = borrow_ty in
@@ -1486,7 +1494,8 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
 
     let kind = RShared in
     let bv_ty = ty in
-    let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind in
+    (* TODO(view): Add view support. *)
+    let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind None in
 
     let borrow_av =
       let ty = borrow_ty in
@@ -1561,7 +1570,8 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
 
     let kind = RMut in
     let bv_ty = ty in
-    let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind in
+    (* TODO(view): Add view support. *)
+    let borrow_ty = mk_ref_ty (RVar (Free rid)) bv_ty kind None in
 
     let borrow_av =
       let ty = borrow_ty in

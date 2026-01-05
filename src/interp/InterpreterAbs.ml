@@ -31,7 +31,8 @@ let rec decompose_shared_value span pm (rid : RegionId.id) (v : tvalue) :
             "Nested borrows are not supported yet";
 
           (* For avalues, a loan has the type borrow (see the comments in [avalue]) *)
-          let ty = mk_ref_ty (RVar (Free rid)) sv.ty RShared in
+          (* TODO(view): Add view support. *)
+          let ty = mk_ref_ty (RVar (Free rid)) sv.ty RShared None in
           let av : tavalue =
             let ignored = mk_aignored span v.ty None in
             let value = ALoan (ASharedLoan (pm, bid, sv, ignored)) in
@@ -118,7 +119,8 @@ let convert_value_to_abstractions (span : Meta.span) (abs_kind : abs_kind)
             (* We use [AIgnore] for the inner value *)
             let ignored = mk_aignored span v.ty in
             (* For avalues, a loan has the type borrow (see the comments in [avalue]) *)
-            let ty = mk_ref_ty (RVar (Free rid)) v.ty RMut in
+            (* TODO(view): Add view support. *)
+            let ty = mk_ref_ty (RVar (Free rid)) v.ty RMut None in
             let av : tavalue =
               let value = ALoan (AMutLoan (PNone, bid, ignored None)) in
               { value; ty }
@@ -144,14 +146,16 @@ let convert_value_to_abstractions (span : Meta.span) (abs_kind : abs_kind)
     | VLiteral _ | VBottom -> ()
     | VAdt { variant_id = _; fields } -> List.iter to_abs fields
     | VBorrow bc -> (
-        let _, ref_ty, kind = ty_as_ref v.ty in
+      (* TODO(view): Add view support. *)
+        let _, ref_ty, kind, _view = ty_as_ref v.ty in
         [%cassert] span (ty_no_regions ref_ty)
           "Nested borrows are not supported yet";
         match bc with
         | VSharedBorrow (bid, sid) ->
             (* Push a region abstraction for this borrow *)
             let rid = ctx.fresh_region_id () in
-            let ty = TRef (RVar (Free rid), ref_ty, kind) in
+            (* TODO(view): Add view support. *)
+            let ty = TRef (RVar (Free rid), ref_ty, kind, None) in
             let value = ABorrow (ASharedBorrow (PNone, bid, sid)) in
             let value : tavalue = { value; ty } in
             let ev = Some (mk_etuple []) in
@@ -163,7 +167,8 @@ let convert_value_to_abstractions (span : Meta.span) (abs_kind : abs_kind)
               "Nested borrows are not supported yet";
             (* Create an avalue to push - note that we use [AIgnore] for the inner avalue *)
             let rid = ctx.fresh_region_id () in
-            let ty = TRef (RVar (Free rid), ref_ty, kind) in
+            (* TODO(view): Add view support. *)
+            let ty = TRef (RVar (Free rid), ref_ty, kind, None) in
             let av : tavalue =
               let ignored = mk_aignored span ref_ty None in
               let av = ABorrow (AMutBorrow (PNone, bid, ignored)) in
@@ -274,7 +279,8 @@ let convert_value_to_output_avalues (span : Meta.span) (ctx : eval_ctx)
         in
         ( List.flatten avalues,
           { value = EAdt { variant_id; fields = outputs }; ty = proj_ty } )
-    | VBorrow bc, TRef (rid, ref_ty, kind) ->
+    | VBorrow bc, TRef (rid, ref_ty, kind, _view) ->
+        (* TODO(view): Add view support. *)
         [%cassert] span (ty_no_regions ref_ty)
           "Nested borrows are not supported yet";
         if keep_region rid then
@@ -282,7 +288,7 @@ let convert_value_to_output_avalues (span : Meta.span) (ctx : eval_ctx)
           | VSharedBorrow (bid, sid) ->
               (* Push a region abstraction for this borrow *)
               let rid = ctx.fresh_region_id () in
-              let ty = TRef (RVar (Free rid), ref_ty, kind) in
+              let ty = TRef (RVar (Free rid), ref_ty, kind, None) in
               let value = ABorrow (ASharedBorrow (pm, bid, sid)) in
               let value : tavalue = { value; ty } in
               let ev = mk_etuple [] in
@@ -372,7 +378,8 @@ let convert_value_to_input_avalues (span : Meta.span) (ctx : eval_ctx)
             (* We use [AIgnore] for the inner value *)
             let ignored = mk_aignored span v.ty in
             (* For avalues, a loan has the type borrow (see the comments in [avalue]) *)
-            let ty = mk_ref_ty (RVar (Free rid)) v.ty RMut in
+            (* TODO(view): Add view support. *)
+            let ty = mk_ref_ty (RVar (Free rid)) v.ty RMut None in
             let av : tavalue =
               let value = ALoan (AMutLoan (pm, bid, ignored None)) in
               { value; ty }

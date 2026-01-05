@@ -360,7 +360,8 @@ let expand_symbolic_value_shared_borrow (span : Meta.span)
       abstract_shared_borrows option =
     if proj.sv_id = original_sv.sv_id then
       match proj.proj_ty with
-      | TRef (r, ref_ty, RShared) ->
+      | TRef (r, ref_ty, RShared, _) ->
+          (* TODO(view): Add view support. *)
           (* Projector over the shared value *)
           let shared_asb =
             AsbProjReborrows { sv_id = shared_sv.sv_id; proj_ty = ref_ty }
@@ -582,7 +583,8 @@ let expand_symbolic_value_no_branching (span : Meta.span) (sv : symbolic_value)
           S.synthesize_symbolic_expansion_no_branching span original_sv
             original_sv_place see )
     (* Borrows *)
-    | TRef (region, ref_ty, rkind) ->
+    | TRef (region, ref_ty, rkind, _rview) ->
+        (* TODO(view): Add view support. *)
         expand_symbolic_value_borrow span original_sv original_sv_place region
           ref_ty rkind ctx
     | _ ->
@@ -728,7 +730,7 @@ let greedy_expand_symbolics_with_borrows (span : Meta.span) : cm_fun =
                   [greedy_expand_symbolics_with_borrows] of [config]): "
                 ^ name_to_string ctx def.item_meta.name)
             else expand_symbolic_value_no_branching span sv None ctx
-        | TAdt { id = TTuple | TBuiltin TBox; _ } | TRef (_, _, _) ->
+        | TAdt { id = TTuple | TBuiltin TBox; _ } | TRef (_, _, _, _) ->
             (* Ok *)
             expand_symbolic_value_no_branching span sv None ctx
         | TAdt { id = TBuiltin (TArray | TSlice | TStr); _ } ->

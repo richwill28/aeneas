@@ -19,6 +19,10 @@ AENEAS_DEBUG ?= $(PWD)/src/_build/default/main
 TEST_RUNNER_EXE ?= $(PWD)/bin/test_runner
 CHARON_EXE ?= $(PWD)/charon/bin/charon
 
+# Path to custom rustc (modify if needed). If charon is built with custom rustc,
+# the library path needs to be set for charon-driver to find librustc_driver.
+CUSTOM_RUSTC_LIB ?= $(HOME)/repo/rust/build/x86_64-unknown-linux-gnu/stage2/lib
+
 # The user can specify additional translation options for Aeneas.
 AENEAS_OPTIONS ?=
 CHARON_OPTIONS ?=
@@ -159,13 +163,23 @@ test-all: $(INPUTS_LIST)
 ifdef IN_CI
 # In CI we do extra sanity checks.
 test-%: AENEAS_OPTIONS += -checks
+test-view-types-%: AENEAS_OPTIONS += -checks
 endif
+
+# Test files in the view-types subdirectory.
+# Example: make test-view-types-motivating-example.rs
+.PHONY: test-view-types-%
+test-view-types-%: build-dev
+	CUSTOM_RUSTC_LIB="$(CUSTOM_RUSTC_LIB)" \
+	$(TEST_RUNNER_EXE) $(CHARON_EXE) $(AENEAS_EXE) $(LLBC_DIR) $(INPUTS_DIR)/view-types/"$*" $(AENEAS_OPTIONS)
+	echo "# Test view-types/$* done"
 
 # Translate the given rust file to available backends. The test runner decides
 # which backends to use and sets test-specific options.
 # Note: the tests have the full file name: `test-arrays.rs`, `test-loops.rs`, `test-bst`.
 .PHONY: test-%
 test-%: build-dev
+	CUSTOM_RUSTC_LIB="$(CUSTOM_RUSTC_LIB)" \
 	$(TEST_RUNNER_EXE) $(CHARON_EXE) $(AENEAS_EXE) $(LLBC_DIR) $(INPUTS_DIR)/"$*" $(AENEAS_OPTIONS)
 	echo "# Test $* done"
 

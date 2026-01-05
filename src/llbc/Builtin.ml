@@ -77,7 +77,7 @@ module Sig = struct
 
   let mk_ref_ty (r : region) (ty : ty) (is_mut : bool) : ty =
     let ref_kind = if is_mut then RMut else RShared in
-    mk_ref_ty r ty ref_kind
+    mk_ref_ty r ty ref_kind None
 
   let mk_array_ty (ty : ty) (cg : const_generic) : ty =
     TAdt { id = TBuiltin TArray; generics = mk_generic_args [] [ ty ] [ cg ] }

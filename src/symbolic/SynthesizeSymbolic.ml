@@ -85,7 +85,7 @@ let synthesize_symbolic_expansion (span : Meta.span) (sv : symbolic_value)
             ls
         in
         ExpandAdt exp
-    | TRef (_, _, _) -> (
+    | TRef (_, _, _, _) -> (
         (* Reference expansion: there should be one branch *)
         match ls with
         | [ (Some see, exp) ] -> ExpandNoBranch (see, exp)

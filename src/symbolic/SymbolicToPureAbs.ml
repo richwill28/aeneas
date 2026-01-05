@@ -291,7 +291,7 @@ let compute_tevalue_proj_kind (span : Meta.span) (type_infos : type_infos)
             super#visit_ESymbolic ty pm eproj
 
       method! visit_EMutBorrowInput ty x =
-        let r, _, _ = TypesUtils.ty_get_ref ty in
+        let r, _, _, _ = TypesUtils.ty_get_ref ty in
         if keep_region r then (
           has_loans := true;
           has_mut_loans := true);
@@ -728,7 +728,7 @@ let einput_to_texpr (ctx : bs_ctx) (ectx : C.eval_ctx) (rids : T.RegionId.Set.t)
         [%ldebug "bottom"];
         [%internal_error] span
     | V.EMutBorrowInput inner ->
-        let r, _, _ = TypesUtils.ty_as_ref input.ty in
+        let r, _, _, _ = TypesUtils.ty_as_ref input.ty in
         let keep_region (r : T.region) =
           match r with
           | T.RVar (Free rid) -> T.RegionId.Set.mem rid rids

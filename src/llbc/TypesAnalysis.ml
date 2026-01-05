@@ -238,7 +238,8 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
             in
             let param_infos = Some param_infos in
             { ty_info with param_infos })
-    | TRef (r, rty, rkind) ->
+    | TRef (r, rty, rkind, _rview) ->
+        (* TODO(view): Not sure if view is relevant here. *)
         (* Update the type info *)
         let contains_static = r_is_static r in
         let contains_borrow = true in
@@ -635,7 +636,7 @@ let compute_outlive_proj_ty (span : Meta.span option)
                 | TBox | TArray | TSlice | TStr -> super#visit_ty outer ty)
           end
         | TVar _ | TLiteral _ | TNever -> ()
-        | TRef (r, ref_ty, _) ->
+        | TRef (r, ref_ty, _, _) ->
             self#visit_region outer r;
             let outer = r :: outer in
             self#visit_ty outer ref_ty

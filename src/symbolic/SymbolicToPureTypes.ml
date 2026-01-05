@@ -109,7 +109,7 @@ let rec translate_sty (span : Meta.span option) (ty : T.ty) : ty =
       (* Note: the `de_bruijn_id`s are incorrect, see comment on `translate_region_binder` *)
   | TLiteral ty -> TLiteral ty
   | TNever -> [%craise_opt_span] span "Unreachable"
-  | TRef (_, rty, _) -> translate span rty
+  | TRef (_, rty, _, _) -> translate span rty
   | TRawPtr (ty, rkind) ->
       let mut =
         match rkind with
@@ -292,7 +292,7 @@ let rec translate_fwd_ty (span : Meta.span option) (type_infos : type_infos)
   | TVar var -> TVar var
   | TNever -> [%craise_opt_span] span "Unreachable"
   | TLiteral lty -> TLiteral lty
-  | TRef (_, rty, _) -> translate rty
+  | TRef (_, rty, _, _) -> translate rty
   | TRawPtr (ty, rkind) ->
       let mut =
         match rkind with
@@ -397,7 +397,8 @@ let rec translate_back_ty (span : Meta.span option) (type_infos : type_infos)
   | TVar var -> wrap (TVar var)
   | TNever -> [%craise_opt_span] span "Unreachable"
   | TLiteral lty -> wrap (TLiteral lty)
-  | TRef (r, rty, rkind) -> (
+  | TRef (r, rty, rkind, _rview) -> (
+      (* TODO(view): It's probably okay to ignore view here? *)
       match rkind with
       | RShared ->
           (* Ignore shared references, unless we are below a mutable borrow *)

@@ -148,7 +148,8 @@ let rec compare_rtys (span : Meta.span) (default : bool)
       in
       (* Combine *)
       combine params_b tys_b
-  | TRef (r1, ty1, kind1), TRef (r2, ty2, kind2) ->
+  | TRef (r1, ty1, kind1, _view1), TRef (r2, ty2, kind2, _view2) ->
+      (* TODO(view): View should be relevant here. Implement. *)
       (* Sanity check *)
       [%sanity_check] span (kind1 = kind2);
       (* Explanation for the case where we check if projections intersect:
@@ -1806,12 +1807,13 @@ let rec norm_proj_tys_union (span : Meta.span) (ty1 : rty) (ty2 : rty) : rty =
       [%sanity_check] span (lit1 = lit2);
       TLiteral lit1
   | TNever, TNever -> TNever
-  | TRef (r1, ty1, rk1), TRef (r2, ty2, rk2) ->
+  | TRef (r1, ty1, rk1, rv1), TRef (r2, ty2, rk2, rv2) ->
       [%sanity_check] span (rk1 = rk2);
       TRef
         ( norm_proj_regions_union span r1 r2,
           norm_proj_tys_union span ty1 ty2,
-          rk1 )
+          rk1,
+          norm_proj_views_union span rv1 rv2 )
   | TRawPtr (ty1, rk1), TRawPtr (ty2, rk2) ->
       [%sanity_check] span (rk1 = rk2);
       TRawPtr (norm_proj_tys_union span ty1 ty2, rk1)
@@ -1872,6 +1874,53 @@ and norm_proj_regions_union (span : Meta.span) (r1 : region) (r2 : region) :
       [%sanity_check] span (rid = RegionId.zero);
       RVar (Free rid)
   | _ -> [%internal_error] span
+
+(* TODO(view): This is just a placeholder implementation. Check if it's correct. *)
+and norm_proj_views_union (_ : Meta.span) (v1 : view_field list option)
+    (v2 : view_field list option) : view_field list option =
+  match (v1, v2) with
+  | None, _ | _, None -> 
+      (* None means full access (no view restriction), which is most permissive. *)
+      None
+  | Some vfs1, Some vfs2 ->
+      (* Helper: Check if path1 is a prefix of path2. *)
+      let is_prefix path1 path2 =
+        let rec aux p1 p2 =
+          match (p1, p2) with
+          | [], _ -> true
+          | _, [] -> false
+          | h1 :: t1, h2 :: t2 -> h1 = h2 && aux t1 t2
+        in
+        aux path1 path2
+      in
+
+      (* Helper: Check if rk1 is at least as permissive as rk2. *)
+      let is_at_least_as_permissive (rk1 : ref_kind) (rk2 : ref_kind) : bool =
+        match (rk1, rk2) with
+        | RMut, _ -> true  (* Mut is at least as permissive as anything. *)
+        | RShared, RShared -> true
+        | RShared, RMut -> false  (* Shared is not as permissive as Mut. *)
+      in
+
+      (* Helper: Check if vf1 subsumes vf2. *)
+      let subsumes (vf1 : view_field) (vf2 : view_field) : bool =
+        (* vf1 subsumes vf2 if:
+           1. vf1.path is a prefix of vf2.path (or equal).
+           2. vf1.mutbl is at least as permissive as vf2.mutbl. *)
+        is_prefix vf1.path vf2.path && 
+        is_at_least_as_permissive vf1.mutbl vf2.mutbl
+      in
+
+      (* Keep only maximal elements under subsumption. *)
+      let keep_maximal (fields : view_field list) : view_field list =
+        List.filter
+          (fun vf ->
+            not (List.exists (fun vf2 -> vf2 <> vf && subsumes vf2 vf) fields))
+          fields
+      in
+
+      let all_fields = vfs1 @ vfs2 in
+      Some (keep_maximal all_fields)
 
 and norm_proj_trait_refs_union (span : Meta.span) (tr1 : trait_ref)
     (tr2 : trait_ref) : trait_ref =

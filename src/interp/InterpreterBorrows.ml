@@ -361,7 +361,7 @@ let give_back_value (span : Meta.span) (bid : BorrowId.id) (nv : tvalue)
                    * the value... Think about a more elegant way. *)
                   let given_back_meta = as_symbolic span nv.value in
                   (* The loan projector *)
-                  let _, ty, _ = ty_as_ref ty in
+                  let _, ty, _, _ = ty_as_ref ty in
                   let given_back =
                     mk_aproj_loans_value_from_symbolic_value abs.regions.owned
                       sv ty
@@ -393,7 +393,7 @@ let give_back_value (span : Meta.span) (bid : BorrowId.id) (nv : tvalue)
         (* Rk.: there is a small issue with the types of the aloan values.
          * See the comment at the level of definition of {!tavalue} *)
         let borrowed_value_aty =
-          let _, ty, _ = ty_get_ref ty in
+          let _, ty, _, _ = ty_get_ref ty in
           ty
         in
         match lc with
@@ -469,7 +469,7 @@ let give_back_value (span : Meta.span) (bid : BorrowId.id) (nv : tvalue)
                    * the value... Think about a more elegant way. *)
                   let given_back_meta = as_symbolic span nv.value in
                   (* The loan projector *)
-                  let _, ty, _ = ty_as_ref ty in
+                  let _, ty, _, _ = ty_as_ref ty in
                   let given_back =
                     mk_eproj_loans_value_from_symbolic_value
                       ctx.type_ctx.type_infos abs.regions.owned sv ty
@@ -501,7 +501,7 @@ let give_back_value (span : Meta.span) (bid : BorrowId.id) (nv : tvalue)
         (* Rk.: there is a small issue with the types of the aloan values.
          * See the comment at the level of definition of {!tavalue} *)
         let borrowed_value_aty =
-          let _, ty, _ = ty_get_ref ty in
+          let _, ty, _, _ = ty_get_ref ty in
           ty
         in
         match lc with
@@ -1931,7 +1931,8 @@ let destructure_abs (span : Meta.span) (abs_kind : abs_kind) ~(can_end : bool)
                 let ty =
                   (* Take the first region of the abstraction - this doesn't really matter *)
                   let r = RegionId.Set.min_elt abs0.regions.owned in
-                  TRef (RVar (Free r), ty, RShared)
+                  (* TODO(view): Add view support. *)
+                  TRef (RVar (Free r), ty, RShared, None)
                 in
                 { value; ty }
               in

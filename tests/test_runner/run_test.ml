@@ -9,11 +9,11 @@ type runner_env = {
 let concat_path = List.fold_left Filename.concat ""
 
 module Command = struct
-  type t = { args : string array; redirect_out : Unix.file_descr option }
+  type t = { args : string array; redirect_out : Unix.file_descr option; env : string array option }
   type status = Success | Failure
 
   let make (args : string list) : t =
-    { args = Array.of_list args; redirect_out = None }
+    { args = Array.of_list args; redirect_out = None; env = None }
 
   let to_string (cmd : t) = Core.String.concat_array ~sep:" " cmd.args
 
@@ -25,7 +25,9 @@ module Command = struct
     (* Run the command *)
     let out = Option.value cmd.redirect_out ~default:Unix.stdout in
     let pid =
-      Unix.create_process cmd.args.(0) cmd.args Unix.stdin out Unix.stderr
+      match cmd.env with
+      | None -> Unix.create_process cmd.args.(0) cmd.args Unix.stdin out Unix.stderr
+      | Some env -> Unix.create_process_env cmd.args.(0) cmd.args env Unix.stdin out Unix.stderr
     in
     let status = Core_unix.waitpid (Core.Pid.of_int pid) in
     match status with
@@ -110,6 +112,38 @@ let run_aeneas (env : runner_env) (case : Input.t) (backend : Backend.t) =
       Command.run_command_expecting_failure cmd;
       Unix.close out
 
+(* Helper to build environment with custom rustc library path if needed *)
+let make_env_with_custom_rustc () =
+  match Sys.getenv_opt "CUSTOM_RUSTC_LIB" with
+  | None -> None (* No custom rustc, use default environment *)
+  | Some custom_lib ->
+      (* Custom rustc is being used, set up LD_LIBRARY_PATH *)
+      let current_env = Unix.environment () in
+      let ld_library_path =
+        match Sys.getenv_opt "LD_LIBRARY_PATH" with
+        | None -> custom_lib
+        | Some existing -> custom_lib ^ ":" ^ existing
+      in
+      (* Update or add LD_LIBRARY_PATH in the environment *)
+      let updated_env =
+        Array.map
+          (fun entry ->
+            if Core.String.is_prefix entry ~prefix:"LD_LIBRARY_PATH=" then
+              "LD_LIBRARY_PATH=" ^ ld_library_path
+            else entry)
+          current_env
+      in
+      (* Check if LD_LIBRARY_PATH was already present *)
+      let has_ld_path =
+        Array.exists
+          (fun entry -> Core.String.is_prefix entry ~prefix:"LD_LIBRARY_PATH=")
+          current_env
+      in
+      if has_ld_path then Some updated_env
+      else
+        (* Add LD_LIBRARY_PATH to the environment *)
+        Some (Array.append updated_env [| "LD_LIBRARY_PATH=" ^ ld_library_path |])
+
 (* Run Charon on a specific input with the given options *)
 let run_charon (env : runner_env) (case : Input.t) =
   (* Create the folder for the .llbc files, if it doesn't exist yet *)
@@ -120,6 +154,8 @@ let run_charon (env : runner_env) (case : Input.t) =
   let llbc_name =
     Filename_unix.realpath env.llbc_dir ^ "/" ^ case.name ^ ".llbc"
   in
+  (* Set up environment for custom rustc if needed *)
+  let custom_env = make_env_with_custom_rustc () in
   match case.kind with
   | SingleFile ->
       let args =
@@ -137,7 +173,8 @@ let run_charon (env : runner_env) (case : Input.t) =
           ]
       in
       (* Run Charon on the rust file *)
-      Command.run_command_expecting_success (Command.make args)
+      let cmd = { (Command.make args) with env = custom_env } in
+      Command.run_command_expecting_success cmd
   | Crate ->
       (* Because some tests have dependencies which force us to implement custom
          treatment in the flake.nix, when in CI, we regenerate files for the crates
@@ -164,7 +201,8 @@ let run_charon (env : runner_env) (case : Input.t) =
         (* Run Charon inside the crate *)
         let old_pwd = Unix.getcwd () in
         Unix.chdir case.path;
-        Command.run_command_expecting_success (Command.make args);
+        let cmd = { (Command.make args) with env = custom_env } in
+        Command.run_command_expecting_success cmd;
         Unix.chdir old_pwd)
       else
         print_endline

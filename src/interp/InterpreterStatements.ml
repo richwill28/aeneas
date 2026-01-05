@@ -842,6 +842,8 @@ and eval_statement_raw (config : config) (st : statement) : stl_cm_fun =
                       | BTwoPhaseMut
                       | BShallow
                       | BUniqueImmutable ),
+                      _,
+                      (* TODO(view): Add view support. *)
                       _ )
                 | NullaryOp _
                 | UnaryOp _
@@ -898,7 +900,8 @@ and eval_rvalue_global (config : config) (span : Meta.span) (dest : place)
  fun ctx ->
   (* One of the micro-passes makes sures there is only one case to handle *)
   match rv with
-  | RvRef ({ kind = PlaceGlobal gref; ty = _ }, BShared, _) ->
+  | RvRef ({ kind = PlaceGlobal gref; ty = _ }, BShared, _, _) ->
+      (* TODO(view): Add view support. *)
       eval_global_ref config span dest gref RShared ctx
   | _ ->
       [%craise] span
@@ -932,7 +935,8 @@ and eval_global_ref (config : config) (span : Meta.span) (dest : place)
       let borrow : tvalue =
         {
           value = VBorrow (VSharedBorrow (bid, sid));
-          ty = TRef (RErased, sval.sv_ty, RShared);
+          (* TODO(view): Add view support. *)
+          ty = TRef (RErased, sval.sv_ty, RShared, None);
         }
       in
       (* We need to push the shared loan in a dummy variable *)

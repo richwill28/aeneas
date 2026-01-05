@@ -129,7 +129,7 @@ let eliminate_shared_borrow_markers (span : Meta.span)
                   | PLeft -> PRight
                   | PRight -> PLeft
                 in
-                let _, ty, _ = ty_get_ref av.ty in
+                let _, ty, _, _ = ty_get_ref av.ty in
                 shared_borrows :=
                   (aid, i + !offset, pm', bid, ty) :: !shared_borrows;
                 offset := !offset + 1;
@@ -983,8 +983,8 @@ let mk_collapse_ctx_merge_duplicate_funs (span : Meta.span)
   let merge_ashared_borrows id ty0 _pm0 _ ty1 _pm1 _ : tavalue =
     (* Sanity checks *)
     let _ =
-      let _, ty0, _ = ty_as_ref ty0 in
-      let _, ty1, _ = ty_as_ref ty1 in
+      let _, ty0, _, _ = ty_as_ref ty0 in
+      let _, ty1, _, _ = ty_as_ref ty1 in
       [%sanity_check] span
         (not (ty_has_borrows (Some span) ctx.type_ctx.type_infos ty0));
       [%sanity_check] span
@@ -1141,7 +1141,8 @@ let add_shared_borrows (span : Meta.span)
           {
             value =
               ABorrow (ASharedBorrow (pm, bid, !ctx.fresh_shared_borrow_id ()));
-            ty = mk_ref_ty r ty RShared;
+            (* TODO(view): Add view support. *)
+            ty = mk_ref_ty r ty RShared None;
           }
         in
         nv :: avl)

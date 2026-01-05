@@ -110,7 +110,8 @@ let prepare_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
     let child_av = mk_aignored span child_rty None in
 
     (* Create the shared loan *)
-    let loan_rty = TRef (RVar (Free nrid), rty, RShared) in
+    (* TODO(view): Add view support. *)
+    let loan_rty = TRef (RVar (Free nrid), rty, RShared, None) in
     let loan_value = ALoan (ASharedLoan (PNone, nlid, nsv, child_av)) in
     let loan_value = mk_tavalue span loan_rty loan_value in
 
@@ -1041,7 +1042,8 @@ let destructure_shared_loans (span : Meta.span) (fixed_aids : AbsId.Set.t) :
                       ctx.type_ctx.type_infos ty))
                 "Not implemented";
               let rid = RegionId.Set.choose abs.regions.owned in
-              let ref_ty = TRef (RVar (Free rid), ty, RShared) in
+              (* TODO(view): Add view support. *)
+              let ref_ty = TRef (RVar (Free rid), ty, RShared, None) in
               let child = ValuesUtils.mk_aignored span ty None in
               let av = ALoan (ASharedLoan (PNone, lid, copy_value sv, child)) in
               let av : tavalue = { value = av; ty = ref_ty } in
