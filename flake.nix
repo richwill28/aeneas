@@ -4,7 +4,7 @@
   inputs = {
     # Remark: when adding inputs here, don't forget to also add them in the
     # arguments to `outputs` below!
-    charon.url = "github:aeneasverif/charon";
+    charon.url = "github:richwill28/charon/view-types";
     flake-utils.follows = "charon/flake-utils";
     nixpkgs.follows = "charon/nixpkgs";
     fstar.url = "github:FStarLang/fstar";

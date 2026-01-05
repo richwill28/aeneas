@@ -8,9 +8,9 @@ fi
 
 rebuild() {
     if which nix 2> /dev/null 1>&2; then
-        nix develop --command bash -c "make test"
+        nix develop --command bash -c "make test-custom"
     elif which rustup 2> /dev/null 1>&2; then
-        make test
+        make test-custom
     else
         echo 'Error: Neither `rustup` nor `nix` appears to be installed. Install one or the other in order to build `charon`.'
         exit 1
@@ -20,13 +20,13 @@ rebuild() {
 PINNED_COMMIT="$(tail -1 charon-pin)"
 if [ ! -e ./charon ]; then
     if [[ "$FORCE" == "1" ]]; then
-        git clone https://github.com/AeneasVerif/charon
+        git clone https://github.com/richwill28/charon
         cd charon && git checkout "$PINNED_COMMIT" && rebuild
         exit 0
     else
         echo 'Error: `charon` not found. Please clone the charon repository into `./charon` at the commit specified '\
              'in `./charon-pin`, or make a symlink to an existing clone of charon:'
-        echo '  $ git clone https://github.com/AeneasVerif/charon'
+        echo '  $ git clone https://github.com/richwill28/charon'
         echo '  $ cd charon && git checkout '"$PINNED_COMMIT"' && make test'
         echo 'To do this automatically, run `make setup-charon`.'
         exit 1
