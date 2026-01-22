@@ -535,7 +535,7 @@ let create_push_abstractions_from_abs_region_groups
   in
   let rg_ids = RegionGroupId.mapi (fun rg_id _ -> rg_id) rgl in
 
-  (* Compute and add the avalues to the abstractions, the insert the abstractions
+  (* Compute and add the avalues to the abstractions, then insert the abstractions
    * in the context. *)
   let insert_abs (ctx : eval_ctx) ((rg_id, abs) : region_group_id * abs) :
       eval_ctx =

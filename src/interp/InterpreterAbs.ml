@@ -146,7 +146,7 @@ let convert_value_to_abstractions (span : Meta.span) (abs_kind : abs_kind)
     | VLiteral _ | VBottom -> ()
     | VAdt { variant_id = _; fields } -> List.iter to_abs fields
     | VBorrow bc -> (
-      (* TODO(view): Add view support. *)
+        (* TODO(view): Add view support. *)
         let _, ref_ty, kind, _view = ty_as_ref v.ty in
         [%cassert] span (ty_no_regions ref_ty)
           "Nested borrows are not supported yet";
@@ -186,7 +186,10 @@ let convert_value_to_abstractions (span : Meta.span) (abs_kind : abs_kind)
             push_abs rid (av :: avl) (Some output) (Some input)
         | VReservedMutBorrow _ ->
             (* This borrow should have been activated *)
-            [%craise] span "Unexpected")
+            [%craise] span "Unexpected"
+        | VPartialBorrow _ ->
+            (* TODO(view): Implement. *)
+            [%craise] span "Partial borrow not supported yet")
     | VLoan _ ->
         let rid = ctx.fresh_region_id () in
         let avl, input = to_inputs rid v in
@@ -316,6 +319,9 @@ let convert_value_to_output_avalues (span : Meta.span) (ctx : eval_ctx)
           | VReservedMutBorrow _ ->
               (* This borrow should have been activated *)
               [%craise] span "Unexpected"
+          | VPartialBorrow _ ->
+              (* TODO(view): Implement. *)
+              [%craise] span "Partial borrow not supported yet"
         else ([], mk_eignored proj_ty)
     | VLoan _, _ ->
         (* TODO: should we project it or not (in which region abstraction should we put it)?
@@ -802,6 +808,9 @@ let merge_abstractions_merge_loan_borrow_pairs (span : Meta.span)
           | AEndedSharedBorrow
           | AEndedIgnoredMutBorrow _
           | AProjSharedBorrow _ -> [%craise] span "Unreachable"
+          (* TODO(view): Implement. *)
+          | APartialBorrow _ ->
+              [%craise] span "Partial borrow not supported yet"
         end
     | ASymbolic (pm, proj) -> begin
         match proj with
@@ -1407,6 +1416,9 @@ let bind_outputs_from_output_input (span : Meta.span) (ctx : eval_ctx)
                  from the context: we shouldn't be in the process of merging it...
               *)
               [%craise] span "Unexpected"
+          | EPartialBorrow _ ->
+              (* TODO(view): Implement. *)
+              [%craise] span "Partial borrow not supported yet"
         end
     | ESymbolic (pm, proj) ->
         (* If we get here it means the symbolic value gets projected (we can't ignore it) *)
@@ -2023,7 +2035,10 @@ let reorder_loans_borrows_in_fresh_abs (span : Meta.span) (allow_markers : bool)
               [%cassert] span (is_aignored child.value) "Not supported yet";
               [%cassert] span (is_aignored given_back.value) "Not supported yet";
               false
-          | AProjSharedBorrow _ -> [%craise] span "Not supported yet")
+          | AProjSharedBorrow _ -> [%craise] span "Not supported yet"
+          (* TODO(view): Implement. *)
+          | APartialBorrow _ ->
+              [%craise] span "Partial borrow not supported yet")
       | AIgnored _ -> false
     in
     let avalues = List.filter filter abs.avalues in
@@ -2304,6 +2319,8 @@ let project_context (span : Meta.span) (fixed_aids : AbsId.Set.t)
         | AProjSharedBorrow _ ->
             (* Those do not have projection markers *)
             super#visit_ABorrow env bc
+        (* TODO(view): Implement. *)
+        | APartialBorrow _ -> [%craise] span "Partial borrow not supported yet"
 
       method! visit_tevalue env v =
         (* We need to preserve the type when projecting joins (the type
@@ -2362,6 +2379,18 @@ let project_context (span : Meta.span) (fixed_aids : AbsId.Set.t)
         | EIgnoredMutBorrow _ | EEndedMutBorrow _ | EEndedIgnoredMutBorrow _ ->
             (* Those do not have projection markers *)
             super#visit_EBorrow env lc
+        | EPartialBorrow epbs ->
+            EBorrow
+              (EPartialBorrow
+                 (List.map
+                    (fun (epb : epartial_borrow) ->
+                      match
+                        super#visit_EBorrow env (epbc_to_ebc epb.content)
+                      with
+                      | EBorrow ebc ->
+                          { epb with content = ebc_to_epbc span ebc }
+                      | _ -> [%craise] span "Unexpected")
+                    epbs))
 
       method! visit_abs_cont env abs =
         let { output; input } = abs in
@@ -2427,7 +2456,9 @@ let add_abs_cont_to_abs span (ctx : eval_ctx) (abs : abs) (abs_fun : abs_fun) :
         | AEndedMutBorrow _
         | AEndedSharedBorrow
         | AEndedIgnoredMutBorrow _
-        | AProjSharedBorrow _ -> [%internal_error] span)
+        | AProjSharedBorrow _ -> [%internal_error] span
+        (* TODO(view): Implement. *)
+        | APartialBorrow _ -> [%craise] span "Not supported yet")
     | ASymbolic (pm, aproj) -> (
         match aproj with
         | AProjLoans { proj = { sv_id; proj_ty }; consumed; borrows } ->

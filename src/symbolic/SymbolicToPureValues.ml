@@ -135,7 +135,10 @@ let rec tvalue_to_texpr (ctx : bs_ctx) (ectx : C.eval_ctx) (v : V.tvalue) :
             translate sv
         | VMutBorrow (_, v) ->
             (* Borrows are the identity in the extraction *)
-            translate v)
+            translate v
+        | VPartialBorrow _ ->
+            (* TODO(view): Implement. *)
+            [%craise] ctx.span "Partial borrow not supported yet")
     | VSymbolic sv -> symbolic_value_to_texpr ctx sv
   in
   (* Debugging *)
@@ -220,6 +223,18 @@ let compute_tavalue_proj_kind span type_infos (abs_regions : T.RegionId.Set.t)
           | AEndedIgnoredMutBorrow _
           | AProjSharedBorrow _ -> ()
           | AMutBorrow _ | AEndedMutBorrow _ -> has_mut_borrows := true
+          | APartialBorrow pbs ->
+              List.iter
+                (fun (pb : V.apartial_borrow) ->
+                  match pb.content with
+                  | V.APBSharedBorrow _
+                  | V.APBEndedSharedBorrow
+                  | V.APBIgnoredMutBorrow _
+                  | V.APBEndedIgnoredMutBorrow _
+                  | V.APBProjSharedBorrow _ -> ()
+                  | V.APBMutBorrow _ | V.APBEndedMutBorrow _ ->
+                      has_mut_borrows := true)
+                pbs
         end;
         (* Continue exploring as a sanity check: we want to make sure we don't find loans *)
         super#visit_ABorrow env bc
@@ -698,6 +713,9 @@ and aborrow_content_to_given_back_aux ~(filter : bool) (mp : mplace option)
       else
         let ty = translate_fwd_ty (Some ctx.span) ctx.type_ctx.type_infos ty in
         (ctx, Some (mk_ignored_pat ty))
+  | APartialBorrow _ ->
+      (* TODO(view): Implement. *)
+      [%craise] ctx.span "Partial borrow not supported yet"
 
 and aproj_to_given_back_aux (mp : mplace option) (aproj : V.aproj) (ty : T.ty)
     (ctx : bs_ctx) : bs_ctx * tpat option =

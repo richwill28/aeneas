@@ -601,6 +601,20 @@ let compute_ids () =
 
       method! visit_VSharedBorrow _ bid sid = add_shared_borrow bid sid
       method! visit_VReservedMutBorrow _ bid sid = add_shared_borrow bid sid
+
+      method! visit_VPartialBorrow _ pbs =
+        List.iter
+          (fun (pb : partial_borrow) ->
+            match pb.content with
+            | PBShared (bid, sid) -> add_shared_borrow bid sid
+            | PBReservedMut (bid, sid) -> add_shared_borrow bid sid
+            | PBMut (bid, _) ->
+                blids := BorrowId.Set.add bid !blids;
+                borrow_ids := BorrowId.Set.add bid !borrow_ids;
+                unique_borrow_ids :=
+                  UniqueBorrowIdSet.add (UMut bid) !unique_borrow_ids)
+          pbs
+
       method! visit_ASharedBorrow _ _ bid sid = add_shared_borrow bid sid
       method! visit_AsbBorrow _ bid sid = add_shared_borrow bid sid
       method! visit_abs_id _ id = aids := AbsId.Set.add id !aids
@@ -971,7 +985,12 @@ let abs_is_empty (abs : abs) : bool =
         | AEndedMutBorrow _
         | AEndedSharedBorrow
         | AEndedIgnoredMutBorrow _
-        | AProjSharedBorrow _ -> ());
+        | AProjSharedBorrow _ -> ()
+        | APartialBorrow apbs ->
+            List.iter
+              (fun (apb : apartial_borrow) ->
+                super#visit_ABorrow env (apbc_to_abc apb.content))
+              apbs);
         super#visit_ABorrow env bc
 
       method! visit_abstract_shared_borrow _ _ = raise Found

@@ -206,7 +206,10 @@ let rec copy_value (span : Meta.span) (allow_adt_copy : bool) (config : config)
             fun e -> e )
       | VMutBorrow (_, _) -> [%craise] span "Can't copy a mutable borrow"
       | VReservedMutBorrow _ ->
-          [%craise] span "Can't copy a reserved mut borrow")
+          [%craise] span "Can't copy a reserved mut borrow"
+      | VPartialBorrow _ ->
+          (* TODO(view): Implement. *)
+          [%craise] span "Partial borrow not supported yet")
   | VLoan lc -> (
       (* We can only copy shared loans *)
       match lc with
@@ -878,10 +881,11 @@ let eval_binary_op (config : config) (span : Meta.span) (binop : binop)
 let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
     (bkind : borrow_kind) (view : view_field list option) (ctx : eval_ctx) :
     tvalue * eval_ctx * (SymbolicAst.expr -> SymbolicAst.expr) =
-  match bkind with
-  | BUniqueImmutable ->
+  match (bkind, view) with
+  | BUniqueImmutable, _ ->
       [%craise] span "Unique immutable closure captures are not supported"
-  | BShared | BTwoPhaseMut | BShallow ->
+  | BShared, None | BTwoPhaseMut, None | BShallow, None ->
+      (* If the view is None, we short-circuit to the existing implementation. *)
       (* **REMARK**: we initially treated shallow borrows like shared borrows.
          In practice this restricted the behaviour too much, so for now we
          forbid them and remove them in the prepasses (see the comments there
@@ -925,7 +929,8 @@ let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
         | BTwoPhaseMut -> RMut
         | _ -> [%craise] span "Unreachable"
       in
-      let rv_ty = TRef (RErased, v.ty, ref_kind, view) in
+      let ty_view = ExpressionsUtils.view_to_ty_view span view in
+      let rv_ty = TRef (RErased, v.ty, ref_kind, ty_view) in
       let bc =
         match bkind with
         | BShared | BShallow ->
@@ -938,7 +943,8 @@ let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
       let rv : tvalue = { value = VBorrow bc; ty = rv_ty } in
       (* Return *)
       (rv, ctx, cc)
-  | BMut ->
+  | BMut, None ->
+      (* If the view is None, we short circuit to the existing implementation. *)
       (* Access the value *)
       let access = Write in
       let greedy_expand = false in
@@ -947,13 +953,227 @@ let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
       in
       (* Compute the rvalue - wrap the value in a mutable borrow with a fresh id *)
       let bid = ctx.fresh_borrow_id () in
-      let rv_ty = TRef (RErased, v.ty, RMut, view) in
+      let ty_view = ExpressionsUtils.view_to_ty_view span view in
+      let rv_ty = TRef (RErased, v.ty, RMut, ty_view) in
       let rv : tvalue = { value = VBorrow (VMutBorrow (bid, v)); ty = rv_ty } in
       (* Compute the loan value with which to replace the value at place p *)
       let nv = { v with value = VLoan (VMutLoan bid) } in
       (* Update the value in the context to replace it with the loan *)
       let ctx = write_place span access p nv ctx in
       (* Return *)
+      (rv, ctx, cc)
+  | BShared, Some vfs
+  | BShallow, Some vfs
+  | BMut, Some vfs
+  | BTwoPhaseMut, Some vfs ->
+      (* **REMARK**: we initially treated shallow borrows like shared borrows.
+         In practice this restricted the behaviour too much, so for now we
+         forbid them and remove them in the prepasses (see the comments there
+         as to why this is sound).
+      *)
+      [%sanity_check] span (bkind <> BShallow);
+
+      let greedy_expand = false in
+
+      (* Read the base place to get its type. *)
+      let _, base_v = read_place span Read p ctx in
+      let base_ty = base_v.ty in
+
+      (* Helper: project a place by a path. *)
+      let rec project_place_by_path (base_place : place) (path : string list) :
+          place =
+        match path with
+        | [] -> base_place
+        | segment :: rest ->
+            (* Read the place to get its type. *)
+            let _, v = read_place span Read base_place ctx in
+
+            (* Extract the ADT type. *)
+            let adt_id, _ =
+              match v.ty with
+              | TAdt { id; generics } -> (id, generics)
+              | _ ->
+                  [%craise] span
+                    ("Expected ADT type for field projection, got: "
+                   ^ show_ety v.ty)
+            in
+
+            (* Handle projection based on type. *)
+            let proj_kind, field_ty =
+              match adt_id with
+              | TTuple ->
+                  (* For tuples, segment should be a numeric index. *)
+                  let field_id =
+                    match int_of_string_opt segment with
+                    | Some idx -> FieldId.of_int idx
+                    | None ->
+                        [%craise] span
+                          ("Expected numeric index for tuple projection, got: "
+                         ^ segment)
+                  in
+                  (* Get tuple field types from the generics. *)
+                  let field_types =
+                    match v.ty with
+                    | TAdt { generics = { types; _ }; _ } -> types
+                    | _ -> [%craise] span "Expected tuple type"
+                  in
+                  let arity = List.length field_types in
+                  let field_ty = FieldId.nth field_types field_id in
+                  (Field (ProjTuple arity, field_id), field_ty)
+              | TAdtId def_id ->
+                  (* Lookup the type declaration for structs/enums. *)
+                  let type_decl = ctx_lookup_type_decl span ctx def_id in
+
+                  (* Get the fields and variant_id based on type kind. *)
+                  let fields, variant_id_for_proj =
+                    match type_decl.kind with
+                    | Struct fields -> (fields, None)
+                    | Enum _ -> (
+                        (* TODO(view): I don't think this branch will ever be reached? *)
+                        (* For enums, we need to know which variant is active. *)
+                        match v.value with
+                        | VAdt adt ->
+                            let variants =
+                              match type_decl.kind with
+                              | Enum vs -> vs
+                              | _ -> [%craise] span "Unreachable"
+                            in
+                            let variant_id = Option.get adt.variant_id in
+                            let variant = VariantId.nth variants variant_id in
+                            (variant.fields, adt.variant_id)
+                        | _ ->
+                            [%craise] span
+                              ("Expected ADT value for enum projection, got: "
+                             ^ show_value v.value))
+                    | Union _ | Opaque | Alias _ | TDeclError _ ->
+                        [%craise] span
+                          "Cannot project union/opaque/alias/error types"
+                  in
+
+                  (* Find the segment with the matching name. *)
+                  let field_id, _ =
+                    let rec find_field (idx : int) (fs : field list) :
+                        (int * field) option =
+                      match fs with
+                      | [] -> None
+                      | f :: rest -> (
+                          match f.field_name with
+                          | Some name when name = segment -> Some (idx, f)
+                          | _ -> find_field (idx + 1) rest)
+                    in
+                    match find_field 0 fields with
+                    | Some (idx, fld) -> (FieldId.of_int idx, fld)
+                    | None ->
+                        let fmt_env = Print.Contexts.eval_ctx_to_fmt_env ctx in
+                        [%craise] span
+                          ("Path segment not found: " ^ segment ^ " in type "
+                          ^ Print.Types.name_to_string fmt_env
+                              type_decl.item_meta.name)
+                  in
+
+                  (* Get the field type. *)
+                  let field_types =
+                    List.map (fun (f : field) -> f.field_ty) fields
+                  in
+                  let field_ty = FieldId.nth field_types field_id in
+                  ( Field (ProjAdt (def_id, variant_id_for_proj), field_id),
+                    field_ty )
+              | TBuiltin _ -> [%craise] span "Cannot project builtin types"
+            in
+
+            (* Create the projected place. *)
+            let projected_place =
+              { kind = PlaceProjection (base_place, proj_kind); ty = field_ty }
+            in
+
+            (* Recursively project for remaining path. *)
+            project_place_by_path projected_place rest
+      in
+
+      (* For each view path, create a partial borrow by:
+         1. Projecting the place by the path.
+         2. Accessing the value with appropriate access.
+         3. Creating a loan at that location. *)
+      let pbs, ctx, cc =
+        List.fold_left
+          (fun (acc_pbs, acc_ctx, acc_cc) (vf : view_field) ->
+            (* Ditto. *)
+            [%sanity_check] span (vf.kind <> BShallow);
+
+            (* Project the place. *)
+            let projected_p = project_place_by_path p vf.path in
+
+            (* Determine access level based on the mode specified for each field. *)
+            let access =
+              match vf.kind with
+              | BShared | BShallow -> Read
+              | BMut | BTwoPhaseMut -> Write
+              | _ -> [%craise] span "Unreachable"
+            in
+
+            (* Access the value at the projected place with appropriate access. *)
+            let lid, proj_v, ctx, cc1 =
+              access_rplace_reorganize_and_read config span greedy_expand access
+                projected_p acc_ctx
+            in
+
+            let pb_kind, loan_v, ctx =
+              match vf.kind with
+              | BShared | BShallow | BTwoPhaseMut ->
+                  let sid = ctx.fresh_shared_borrow_id () in
+                  (* Check if the value is already a shared loan. *)
+                  let bid, loan_v =
+                    match (lid, proj_v.value) with
+                    | Some lid, _ | None, VLoan (VSharedLoan (lid, _)) ->
+                        (* The value is (directly inside) a shared loan: reuse it. *)
+                        (lid, proj_v)
+                    | _ ->
+                        (* Not a shared loan: create one. *)
+                        let bid = ctx.fresh_borrow_id () in
+                        let loan_v =
+                          {
+                            proj_v with
+                            value = VLoan (VSharedLoan (bid, proj_v));
+                          }
+                        in
+                        (bid, loan_v)
+                  in
+                  let pb_kind =
+                    match vf.kind with
+                    | BShared | BShallow -> PBShared (bid, sid)
+                    | BTwoPhaseMut -> PBReservedMut (bid, sid)
+                    | _ -> [%craise] span "Unreachable"
+                  in
+                  (pb_kind, loan_v, ctx)
+              | BMut ->
+                  let bid = ctx.fresh_borrow_id () in
+                  let loan_v = { proj_v with value = VLoan (VMutLoan bid) } in
+                  (PBMut (bid, proj_v), loan_v, ctx)
+              | _ -> [%craise] span "Unreachable"
+            in
+            let pb : partial_borrow = { path = vf.path; content = pb_kind } in
+            let ctx = write_place span access projected_p loan_v ctx in
+            (pb :: acc_pbs, ctx, cc_comp acc_cc cc1))
+          ([], ctx, fun e -> e)
+          vfs
+      in
+
+      (* Reverse to maintain the original order for clarity. *)
+      let pbs = List.rev pbs in
+
+      (* Create the return value with the appropriate reference kind. *)
+      let ref_kind =
+        match bkind with
+        | BShared -> RShared
+        | BMut | BTwoPhaseMut -> RMut
+        | _ -> [%craise] span "Unreachable"
+      in
+      (* Convert view_field list to ty_view_field list for the type *)
+      let ty_vfs = ExpressionsUtils.view_to_ty_view span (Some vfs) in
+      let rv_ty = TRef (RErased, base_ty, ref_kind, ty_vfs) in
+      let rv : tvalue =
+        { value = VBorrow (Values.VPartialBorrow pbs); ty = rv_ty }
+      in
       (rv, ctx, cc)
 
 let eval_rvalue_aggregate (config : config) (span : Meta.span)

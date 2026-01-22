@@ -194,7 +194,15 @@ let reserved_in_value (v : tvalue) : bool =
   let obj =
     object
       inherit [_] iter_tvalue
-      method! visit_VReservedMutBorrow _env _ = raise Found
+      method! visit_VReservedMutBorrow _env _ _ = raise Found
+
+      method! visit_VPartialBorrow _env pbs =
+        List.iter
+          (fun (pb : partial_borrow) ->
+            match pb.content with
+            | PBReservedMut _ -> raise Found
+            | PBShared _ | PBMut _ -> ())
+          pbs
     end
   in
   (* We use exceptions *)
@@ -613,3 +621,61 @@ let mk_let (span : Meta.span) (rid_set : region_id_set) (pat : tepat)
   let value = ELet (rid_set, pat, bound, e) in
   let ty = e.ty in
   { value; ty }
+
+(** Converts a [borrow_content] to a [partial_borrow_content]. *)
+let bc_to_pbc (span : Meta.span) (bc : borrow_content) : partial_borrow_content
+    =
+  match bc with
+  | VSharedBorrow (bid, sid) -> PBShared (bid, sid)
+  | VMutBorrow (bid, tv) -> PBMut (bid, tv)
+  | VReservedMutBorrow (bid, sid) -> PBReservedMut (bid, sid)
+  | VPartialBorrow _ -> [%craise] span "Unexpected"
+
+(** Converts a [partial_borrow_content] to a [borrow_content]. *)
+let pbc_to_bc (pbc : partial_borrow_content) : borrow_content =
+  match pbc with
+  | PBShared (bid, sid) -> VSharedBorrow (bid, sid)
+  | PBMut (bid, tv) -> VMutBorrow (bid, tv)
+  | PBReservedMut (bid, sid) -> VReservedMutBorrow (bid, sid)
+
+(** Convert an [aborrow_content] to [apartial_borrow_content]. *)
+let abc_to_apbc (span : Meta.span) (abc : aborrow_content) :
+    apartial_borrow_content =
+  match abc with
+  | AMutBorrow (pm, bid, tav) -> APBMutBorrow (pm, bid, tav)
+  | ASharedBorrow (pm, bid, sid) -> APBSharedBorrow (pm, bid, sid)
+  | AIgnoredMutBorrow (bid_opt, tav) -> APBIgnoredMutBorrow (bid_opt, tav)
+  | AEndedMutBorrow (meta, tav) -> APBEndedMutBorrow (meta, tav)
+  | AEndedSharedBorrow -> APBEndedSharedBorrow
+  | AEndedIgnoredMutBorrow meta -> APBEndedIgnoredMutBorrow meta
+  | AProjSharedBorrow meta -> APBProjSharedBorrow meta
+  | APartialBorrow _ -> [%craise] span "Unexpected"
+
+(** Convert an [apartial_borrow_content] to an [aborrow_content]. *)
+let apbc_to_abc (apbc : apartial_borrow_content) : aborrow_content =
+  match apbc with
+  | APBMutBorrow (pm, bid, tav) -> AMutBorrow (pm, bid, tav)
+  | APBSharedBorrow (pm, bid, sid) -> ASharedBorrow (pm, bid, sid)
+  | APBIgnoredMutBorrow (bid_opt, tav) -> AIgnoredMutBorrow (bid_opt, tav)
+  | APBEndedMutBorrow (meta, tav) -> AEndedMutBorrow (meta, tav)
+  | APBEndedSharedBorrow -> AEndedSharedBorrow
+  | APBEndedIgnoredMutBorrow meta -> AEndedIgnoredMutBorrow meta
+  | APBProjSharedBorrow meta -> AProjSharedBorrow meta
+
+(** Convert an [eborrow_content] to an [epartial_borrow_content].*)
+let ebc_to_epbc (span : Meta.span) (bc : eborrow_content) :
+    epartial_borrow_content =
+  match bc with
+  | EMutBorrow (pm, bid, tev) -> EPBMutBorrow (pm, bid, tev)
+  | EIgnoredMutBorrow (bid_opt, tev) -> EPBIgnoredMutBorrow (bid_opt, tev)
+  | EEndedMutBorrow (meta, tev) -> EPBEndedMutBorrow (meta, tev)
+  | EEndedIgnoredMutBorrow meta -> EPBEndedIgnoredMutBorrow meta
+  | EPartialBorrow _ -> [%craise] span "Unexpected"
+
+(** Convert an [epartial_borrow_content] to an [eborrow_content]. *)
+let epbc_to_ebc (pbc : epartial_borrow_content) : eborrow_content =
+  match pbc with
+  | EPBMutBorrow (pm, bid, tev) -> EMutBorrow (pm, bid, tev)
+  | EPBIgnoredMutBorrow (bid_opt, tev) -> EIgnoredMutBorrow (bid_opt, tev)
+  | EPBEndedMutBorrow (meta, tev) -> EEndedMutBorrow (meta, tev)
+  | EPBEndedIgnoredMutBorrow meta -> EEndedIgnoredMutBorrow meta

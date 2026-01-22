@@ -114,6 +114,29 @@ module Values = struct
         "reserved_borrow@" ^ BorrowId.to_string bid ^ "(^"
         ^ SharedBorrowId.to_string sid
         ^ ")"
+    | VPartialBorrow pbs ->
+        let partial_borrow_to_string (pb : Values.partial_borrow) : string =
+          let path_str = "[" ^ String.concat ", " pb.path ^ "]" in
+          let borrow_str =
+            match pb.content with
+            | Values.PBShared (bid, sid) ->
+                "shared@" ^ BorrowId.to_string bid ^ "(^"
+                ^ SharedBorrowId.to_string sid
+                ^ ")"
+            | Values.PBMut (bid, tv) ->
+                "mut@" ^ BorrowId.to_string bid ^ " ("
+                ^ tvalue_to_string ~span env tv
+                ^ ")"
+            | Values.PBReservedMut (bid, sid) ->
+                "reserved@" ^ BorrowId.to_string bid ^ "(^"
+                ^ SharedBorrowId.to_string sid
+                ^ ")"
+          in
+          path_str ^ " -> " ^ borrow_str
+        in
+        "partial_borrow{ "
+        ^ String.concat "; " (List.map partial_borrow_to_string pbs)
+        ^ " }"
 
   and loan_content_to_string ?(span : Meta.span option = None) (env : fmt_env)
       (lc : loan_content) : string =
@@ -335,6 +358,56 @@ module Values = struct
     | AEndedSharedBorrow -> "@ended_shared_borrow"
     | AProjSharedBorrow sb ->
         "@proj_shared_borrow(" ^ abstract_shared_borrows_to_string env sb ^ ")"
+    | APartialBorrow pbs ->
+        "@partial_borrow["
+        ^ String.concat "; "
+            (List.map
+               (fun (pb : apartial_borrow) ->
+                 let path_str = String.concat "." pb.path in
+                 let borrow_str =
+                   match pb.content with
+                   | APBMutBorrow (pm, bid, av) ->
+                       "@mb(" ^ BorrowId.to_string bid ^ ", "
+                       ^ tavalue_to_string ~span ~with_ended env av
+                       ^ ")"
+                       |> add_proj_marker pm
+                   | APBSharedBorrow (pm, bid, sid) ->
+                       "sb@" ^ BorrowId.to_string bid ^ "(^"
+                       ^ SharedBorrowId.to_string sid
+                       ^ ")"
+                       |> add_proj_marker pm
+                   | APBIgnoredMutBorrow (opt_bid, av) ->
+                       "@ignored_mut_borrow("
+                       ^ option_to_string BorrowId.to_string opt_bid
+                       ^ ", "
+                       ^ tavalue_to_string ~span ~with_ended env av
+                       ^ ")"
+                   | APBEndedMutBorrow (mv, child) ->
+                       "@ended_mut_borrow("
+                       ^
+                       if with_ended then
+                         "given_back= "
+                         ^ aended_mut_borrow_meta_to_string env mv
+                       else
+                         ""
+                         ^ tavalue_to_string ~span ~with_ended env child
+                         ^ ")"
+                   | APBEndedIgnoredMutBorrow
+                       { child; given_back; given_back_meta = _ } ->
+                       "@ended_ignored_mut_borrow{ "
+                       ^ tavalue_to_string ~span ~with_ended env child
+                       ^ "; "
+                       ^ tavalue_to_string ~span ~with_ended env given_back
+                       ^ ")"
+                   | APBEndedSharedBorrow -> "@ended_shared_borrow"
+                   | APBProjSharedBorrow sb ->
+                       "@proj_shared_borrow("
+                       ^ abstract_shared_borrows_to_string env sb
+                       ^ ")"
+                 in
+                 path_str ^ ": " ^ borrow_str)
+               pbs)
+        ^ "]"
 
   (** An environment specific to abstraction expressions. We use it to properly
       print the bound variables: as it is hard to interpret deBruijn indices, we
@@ -684,6 +757,49 @@ module Values = struct
         ^ tevalue_to_string ~span ~with_ended env aenv indent indent_incr
             given_back
         ^ ")"
+    | EPartialBorrow pbs ->
+        let pbs_strs =
+          List.map
+            (fun (pb : epartial_borrow) ->
+              let path_str = String.concat "." pb.path in
+              let borrow_str =
+                match pb.content with
+                | EPBMutBorrow (pm, bid, ev) ->
+                    "@mb(" ^ BorrowId.to_string bid ^ ", "
+                    ^ tevalue_to_string ~span ~with_ended env aenv indent
+                        indent_incr ev
+                    ^ ")"
+                    |> add_proj_marker pm
+                | EPBIgnoredMutBorrow (opt_bid, ev) ->
+                    "@ignored_mut_borrow("
+                    ^ option_to_string BorrowId.to_string opt_bid
+                    ^ ", "
+                    ^ tevalue_to_string ~span ~with_ended env aenv indent
+                        indent_incr ev
+                    ^ ")"
+                | EPBEndedMutBorrow (mv, child) ->
+                    "@ended_mut_borrow("
+                    ^
+                    if with_ended then
+                      "given_back= " ^ eended_mut_borrow_meta_to_string env mv
+                    else
+                      ""
+                      ^ tevalue_to_string ~span ~with_ended env aenv indent
+                          indent_incr child
+                      ^ ")"
+                | EPBEndedIgnoredMutBorrow { child; given_back; _ } ->
+                    "@ended_ignored_mut_borrow{ "
+                    ^ tevalue_to_string ~span ~with_ended env aenv indent
+                        indent_incr child
+                    ^ "; "
+                    ^ tevalue_to_string ~span ~with_ended env aenv indent
+                        indent_incr given_back
+                    ^ ")"
+              in
+              path_str ^ " -> " ^ borrow_str)
+            pbs
+        in
+        "@partial_borrow{" ^ String.concat ", " pbs_strs ^ "}"
 
   let abs_kind_to_string (kind : abs_kind) : string =
     match kind with

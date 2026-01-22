@@ -4,6 +4,7 @@
 
 open Types
 open Values
+open ValuesUtils
 open Contexts
 open Utils
 open TypesUtils
@@ -236,6 +237,17 @@ let lookup_loan_opt (span : Meta.span) (ek : exploration_kind) (l : BorrowId.id)
             (* Control the dive *)
             if ek.enter_mut_borrows then super#visit_VMutBorrow env bid mv
             else ()
+        | VPartialBorrow pbs ->
+            List.iter
+              (fun (pb : partial_borrow) ->
+                match pb.content with
+                | PBShared (bid, sid) -> super#visit_VSharedBorrow env bid sid
+                | PBReservedMut (bid, sid) ->
+                    super#visit_VReservedMutBorrow env bid sid
+                | PBMut (bid, tv) ->
+                    if ek.enter_mut_borrows then
+                      super#visit_VMutBorrow env bid tv)
+              pbs
 
       (** We reimplement {!visit_Loan} (rather than the more precise functions
           {!visit_SharedLoan}, etc.) on purpose: as we have an exhaustive match
@@ -347,6 +359,17 @@ let update_loan (span : Meta.span) (ek : exploration_kind) (l : BorrowId.id)
             (* Control the dive into mutable borrows *)
             if ek.enter_mut_borrows then super#visit_VMutBorrow env bid mv
             else VMutBorrow (bid, mv)
+        | VPartialBorrow pbs ->
+            VPartialBorrow
+              (List.map
+                 (fun (pb : partial_borrow) ->
+                   {
+                     pb with
+                     content =
+                       bc_to_pbc span
+                         (super#visit_borrow_content env (pbc_to_bc pb.content));
+                   })
+                 pbs)
 
       (** We reimplement {!visit_loan_content} (rather than one of the sub-
           functions) on purpose: exhaustive matches are good for maintenance *)
@@ -452,6 +475,11 @@ let lookup_borrow_opt (span : Meta.span) (ek : exploration_kind)
             (* Check the borrow id *)
             if UShared uid = l then raise (FoundGBorrowContent (Concrete bc))
             else ()
+        | VPartialBorrow pbs ->
+            List.iter
+              (fun (pb : partial_borrow) ->
+                super#visit_borrow_content env (pbc_to_bc pb.content))
+              pbs
 
       method! visit_loan_content env lc =
         match lc with
@@ -486,6 +514,11 @@ let lookup_borrow_opt (span : Meta.span) (ek : exploration_kind)
                   raise (FoundGBorrowContent (Abstract bc))
                 else ()
             | UMut _ -> ())
+        | APartialBorrow apbs ->
+            List.iter
+              (fun (apb : apartial_borrow) ->
+                super#visit_aborrow_content env (apbc_to_abc apb.content))
+              apbs
 
       method! visit_abs env abs =
         if ek.enter_abs then super#visit_abs env abs else ()
@@ -526,6 +559,11 @@ let lookup_eborrow_opt (span : Meta.span) (ek : exploration_kind)
         | EIgnoredMutBorrow (_, _)
         | EEndedMutBorrow _ | EEndedIgnoredMutBorrow _ ->
             super#visit_eborrow_content env bc
+        | EPartialBorrow epbs ->
+            List.iter
+              (fun (epb : epartial_borrow) ->
+                super#visit_eborrow_content env (epbc_to_ebc epb.content))
+              epbs
 
       method! visit_abs env abs =
         if ek.enter_abs then super#visit_abs env abs else ()
@@ -562,6 +600,16 @@ let lookup_shared_reserved_borrows (l : loan_id) (ctx : eval_ctx) :
       method! visit_VReservedMutBorrow _ l' uid =
         (* Check the borrow id *)
         if l' = l then borrows := uid :: !borrows else ()
+
+      method! visit_VPartialBorrow _ pbs =
+        List.iter
+          (fun (pb : partial_borrow) ->
+            match pb.content with
+            | PBShared (l', uid) -> if l' = l then borrows := uid :: !borrows
+            | PBReservedMut (l', uid) ->
+                if l' = l then borrows := uid :: !borrows
+            | PBMut _ -> ())
+          pbs
 
       method! visit_ASharedBorrow _ _ l' uid =
         (* Check the borrow id *)
@@ -607,6 +655,17 @@ let update_borrow (span : Meta.span) (ek : exploration_kind)
             (* Check the id *)
             if UShared sid = l then update ()
             else super#visit_VReservedMutBorrow env bid sid
+        | VPartialBorrow pbs ->
+            VPartialBorrow
+              (List.map
+                 (fun (pb : partial_borrow) ->
+                   {
+                     pb with
+                     content =
+                       bc_to_pbc span
+                         (super#visit_borrow_content env (pbc_to_bc pb.content));
+                   })
+                 pbs)
 
       method! visit_loan_content env lc =
         match lc with
@@ -681,6 +740,21 @@ let update_aborrow (span : Meta.span) (ek : exploration_kind)
                 if borrow_in_asb l asb then update ()
                 else ABorrow (super#visit_AProjSharedBorrow env asb)
             | UMut _ -> super#visit_ABorrow env bc)
+        | APartialBorrow apbs ->
+            ABorrow
+              (APartialBorrow
+                 (List.map
+                    (fun (apb : apartial_borrow) ->
+                      {
+                        apb with
+                        content =
+                          (match
+                             super#visit_ABorrow env (apbc_to_abc apb.content)
+                           with
+                          | ABorrow abc -> abc_to_apbc span abc
+                          | _ -> [%craise] span "Unexpected");
+                      })
+                    apbs))
 
       method! visit_EBorrow env bc =
         match bc with
@@ -691,6 +765,21 @@ let update_aborrow (span : Meta.span) (ek : exploration_kind)
             else EBorrow (super#visit_EMutBorrow env pm bid av)
         | EIgnoredMutBorrow _ | EEndedMutBorrow _ | EEndedIgnoredMutBorrow _ ->
             super#visit_EBorrow env bc
+        | EPartialBorrow epbs ->
+            EBorrow
+              (EPartialBorrow
+                 (List.map
+                    (fun (epb : epartial_borrow) ->
+                      {
+                        epb with
+                        content =
+                          (match
+                             super#visit_EBorrow env (epbc_to_ebc epb.content)
+                           with
+                          | EBorrow ebc -> ebc_to_epbc span ebc
+                          | _ -> [%craise] span "Unexpected");
+                      })
+                    epbs))
 
       method! visit_abs env abs =
         if ek.enter_abs then super#visit_abs env abs else abs
@@ -1473,6 +1562,11 @@ let abs_has_non_ended_eborrows (abs : abs) : bool =
       method! visit_eborrow_content env bc =
         (match bc with
         | EMutBorrow _ -> raise Found
+        | EPartialBorrow epbs ->
+            List.iter
+              (fun (epb : epartial_borrow) ->
+                super#visit_eborrow_content env (epbc_to_ebc epb.content))
+              epbs
         | EIgnoredMutBorrow _ | EEndedMutBorrow _ | EEndedIgnoredMutBorrow _ ->
             ());
         super#visit_eborrow_content env bc
@@ -1876,10 +1970,10 @@ and norm_proj_regions_union (span : Meta.span) (r1 : region) (r2 : region) :
   | _ -> [%internal_error] span
 
 (* TODO(view): This is just a placeholder implementation. Check if it's correct. *)
-and norm_proj_views_union (_ : Meta.span) (v1 : view_field list option)
-    (v2 : view_field list option) : view_field list option =
+and norm_proj_views_union (_ : Meta.span) (v1 : ty_view_field list option)
+    (v2 : ty_view_field list option) : ty_view_field list option =
   match (v1, v2) with
-  | None, _ | _, None -> 
+  | None, _ | _, None ->
       (* None means full access (no view restriction), which is most permissive. *)
       None
   | Some vfs1, Some vfs2 ->
@@ -1897,22 +1991,22 @@ and norm_proj_views_union (_ : Meta.span) (v1 : view_field list option)
       (* Helper: Check if rk1 is at least as permissive as rk2. *)
       let is_at_least_as_permissive (rk1 : ref_kind) (rk2 : ref_kind) : bool =
         match (rk1, rk2) with
-        | RMut, _ -> true  (* Mut is at least as permissive as anything. *)
+        | RMut, _ -> true (* Mut is at least as permissive as anything. *)
         | RShared, RShared -> true
-        | RShared, RMut -> false  (* Shared is not as permissive as Mut. *)
+        | RShared, RMut -> false (* Shared is not as permissive as Mut. *)
       in
 
       (* Helper: Check if vf1 subsumes vf2. *)
-      let subsumes (vf1 : view_field) (vf2 : view_field) : bool =
+      let subsumes (vf1 : ty_view_field) (vf2 : ty_view_field) : bool =
         (* vf1 subsumes vf2 if:
            1. vf1.path is a prefix of vf2.path (or equal).
            2. vf1.mutbl is at least as permissive as vf2.mutbl. *)
-        is_prefix vf1.path vf2.path && 
-        is_at_least_as_permissive vf1.mutbl vf2.mutbl
+        is_prefix vf1.path vf2.path
+        && is_at_least_as_permissive vf1.mutbl vf2.mutbl
       in
 
       (* Keep only maximal elements under subsumption. *)
-      let keep_maximal (fields : view_field list) : view_field list =
+      let keep_maximal (fields : ty_view_field list) : ty_view_field list =
         List.filter
           (fun vf ->
             not (List.exists (fun vf2 -> vf2 <> vf && subsumes vf2 vf) fields))

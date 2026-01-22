@@ -128,6 +128,9 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
                in case we haven't dived into a borrow/loan yet. *)
               let outer = update_outer_borrow outer (MutBorrow l') in
               VBorrow (super#visit_VMutBorrow outer l' bv)
+        | VPartialBorrow _ ->
+            (* TODO(view): Implement. *)
+            [%craise] span "Partial borrow not supported yet"
 
       (** We reimplement {!visit_ALoan} because we may have to update the outer
           borrows *)
@@ -213,6 +216,19 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
                 else (* Nothing special to do *)
                   super#visit_ABorrow outer bc
             | UMut _ -> super#visit_ABorrow outer bc)
+        | APartialBorrow apbs ->
+            (* TODO(view): Not sure if this is correct. *)
+            ABorrow
+              (APartialBorrow
+                 (List.map
+                    (fun (apb : apartial_borrow) ->
+                      match
+                        super#visit_ABorrow outer (apbc_to_abc apb.content)
+                      with
+                      | ABorrow abc ->
+                          { apb with content = abc_to_apbc span abc }
+                      | _ -> [%craise] span "Unexpected")
+                    apbs))
 
       method! visit_abs outer abs =
         (* Update the outer abs *)
@@ -791,6 +807,9 @@ let give_back_concrete (span : Meta.span) (l : unique_borrow_id)
         (Option.is_some (ctx_lookup_loan_opt span sanity_ek bid ctx));
       (* We have nothing to update in the context *)
       ctx
+  | Concrete (VPartialBorrow _) ->
+      (* TODO(view): Implement. *)
+      [%craise] span "Partial borrow not supported yet"
   | Abstract _ ->
       (* We shouldn't get here: ending borrows inside abstractions is taken care
        of separately *)
@@ -979,6 +998,15 @@ and end_shared_loan_aux (config : config) (span : Meta.span)
 
       method! visit_VSharedBorrow _ bid sid =
         if bid = l then raise (FoundSharedBorrowId (bid, sid)) else ()
+
+      method! visit_VPartialBorrow _ pbs =
+        List.iter
+          (fun (pb : partial_borrow) ->
+            match pb.content with
+            | PBShared (bid, sid) ->
+                if bid = l then raise (FoundSharedBorrowId (bid, sid))
+            | PBReservedMut _ | PBMut _ -> ())
+          pbs
 
       method! visit_ASharedBorrow _ pm bid sid =
         [%sanity_check] span (pm = PNone);
@@ -1239,6 +1267,11 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
         | AEndedSharedBorrow ->
             (* Nothing to do for ignored borrows *)
             ()
+        | APartialBorrow apbs ->
+            List.iter
+              (fun (apb : apartial_borrow) ->
+                super#visit_aborrow_content env (apbc_to_abc apb.content))
+              apbs
 
       method! visit_aproj env sproj =
         (match sproj with
@@ -1253,6 +1286,8 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
         match bc with
         | VSharedBorrow _ | VMutBorrow (_, _) -> raise (FoundBorrowContent bc)
         | VReservedMutBorrow _ -> [%craise] span "Unreachable"
+        (* TODO(view): Implement. *)
+        | VPartialBorrow _ -> [%craise] span "Partial borrow not supported yet"
     end
   in
   (* Lookup the abstraction *)
@@ -1327,6 +1362,86 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
         | AIgnoredMutBorrow _
         | AEndedIgnoredMutBorrow _
         | AEndedSharedBorrow -> [%craise] span "Unexpected"
+        | APartialBorrow apbs ->
+            List.fold_left
+              (fun ctx (apb : apartial_borrow) ->
+                match apb.content with
+                | APBMutBorrow (pm, bid, av) ->
+                    [%sanity_check] span (pm = PNone);
+                    (* First, convert the avalue to a (fresh symbolic) value *)
+                    let sv = convert_avalue_to_given_back_value span ctx av in
+                    (* Replace the mut borrow to register the fact that we ended
+                      it and store with it the freshly generated given back value *)
+                    let meta : aended_mut_borrow_meta =
+                      { bid; given_back = sv }
+                    in
+                    let ended_borrow = ABorrow (AEndedMutBorrow (meta, av)) in
+                    let ended_eborrow =
+                      match lookup_eborrow_opt span ek_all bid ctx with
+                      | None -> None
+                      | Some (EMutBorrow (pm, bid, av)) ->
+                          [%sanity_check] span (pm = PNone);
+                          let meta : eended_mut_borrow_meta =
+                            { bid; given_back = sv }
+                          in
+                          Some (EBorrow (EEndedMutBorrow (meta, av)))
+                      | Some (EPartialBorrow epbs) -> (
+                          (* Find the EPBMutBorrow with the matching bid *)
+                          match
+                            List.find_opt
+                              (fun (epb : epartial_borrow) ->
+                                match epb.content with
+                                | EPBMutBorrow (_, bid', _) -> bid' = bid
+                                | _ -> false)
+                              epbs
+                          with
+                          | Some { content = EPBMutBorrow (pm, bid, av); _ } ->
+                              [%sanity_check] span (pm = PNone);
+                              let meta : eended_mut_borrow_meta =
+                                { bid; given_back = sv }
+                              in
+                              Some (EBorrow (EEndedMutBorrow (meta, av)))
+                          | _ -> [%craise] span "Unexpected")
+                      | Some _ -> [%craise] span "Unexpected"
+                    in
+                    let ctx =
+                      update_aborrow span ek_all (UMut bid) ended_borrow
+                        ended_eborrow ctx
+                    in
+                    (* Give the value back *)
+                    let sv = mk_tvalue_from_symbolic_value sv in
+                    give_back_value span bid sv ctx
+                | APBSharedBorrow (pm, _, sid) ->
+                    [%sanity_check] span (pm = PNone);
+                    (* Replace the shared borrow to account for the fact it ended *)
+                    let ended_borrow = ABorrow AEndedSharedBorrow in
+                    update_aborrow span ek_all (UShared sid) ended_borrow None
+                      ctx
+                | APBProjSharedBorrow asb ->
+                    (* Retrieve the borrow ids *)
+                    let bids =
+                      List.filter_map
+                        (fun asb ->
+                          match asb with
+                          | AsbBorrow (_, sid) -> Some sid
+                          | AsbProjReborrows _ -> None)
+                        asb
+                    in
+                    (* There should be at least one borrow identifier in the set, which we
+                    can use to identify the whole set *)
+                    let repr_bid = List.hd bids in
+                    (* Replace the shared borrow with Bottom *)
+                    let ctx =
+                      update_aborrow span ek_all (UShared repr_bid)
+                        (ABorrow AEndedSharedBorrow) None ctx
+                    in
+                    (* Continue *)
+                    ctx
+                | APBEndedMutBorrow _
+                | APBIgnoredMutBorrow _
+                | APBEndedIgnoredMutBorrow _
+                | APBEndedSharedBorrow -> [%craise] span "Unexpected")
+              ctx apbs
       in
       (* Reexplore *)
       end_abstraction_borrows config span chain abs_id ctx
@@ -1371,6 +1486,8 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
                  * shared borrow: the value is thus unchanged *)
                 give_back_value span bid v ctx)
         | VReservedMutBorrow _ -> [%craise] span "Unreachable"
+        (* TODO(view): Implement. *)
+        | VPartialBorrow _ -> [%craise] span "Partial borrow not supported yet"
       in
       (* Reexplore *)
       end_abstraction_borrows config span chain abs_id ctx
@@ -1651,6 +1768,8 @@ let replace_reserved_borrow_with_mut_borrow (span : Meta.span) (l : BorrowId.id)
   | Concrete (VReservedMutBorrow _) ->
       (* Update it *)
       update_borrow span ek (UShared bid) (VMutBorrow (l, borrowed_value)) ctx
+  | Concrete (VPartialBorrow _) ->
+      update_borrow span ek (UShared bid) (VMutBorrow (l, borrowed_value)) ctx
   | Abstract _ ->
       (* This can't happen for sure *)
       [%craise] span
@@ -1853,7 +1972,10 @@ let destructure_abs (span : Meta.span) (abs_kind : abs_kind) ~(can_end : bool)
                be in the context anymore (if we end *one* borrow in an abstraction,
                we have to end them all and remove the abstraction from the context)
             *)
-            [%craise] span "Unreachable")
+            [%craise] span "Unreachable"
+        | APartialBorrow _ ->
+            (* TODO(view): Implement. *)
+            [%craise] span "Partial borrow not supported yet")
     | ASymbolic (_, aproj) -> (
         (* *)
         match aproj with
@@ -2089,6 +2211,12 @@ let abs_mut_borrows_loans_in_fixed span (ctx : eval_ctx)
         | AProjSharedBorrow _ ->
             (* Unimplemented for now *)
             [%internal_error] span
+        | APartialBorrow apbs ->
+            (* TODO(view): Not sure if this is correct. *)
+            List.iter
+              (fun (apb : apartial_borrow) ->
+                super#visit_aborrow_content env (apbc_to_abc apb.content))
+              apbs
 
       method! visit_aproj env proj =
         super#visit_aproj env proj;
@@ -2206,6 +2334,9 @@ let rec simplify_dummy_values_useless_abs_aux (config : config)
                         (* There might be shared loans to end inside the borrow *)
                         let v = self#visit_tvalue false v in
                         VBorrow (VMutBorrow (bid, v))
+                  | VPartialBorrow _ ->
+                      (* TODO(view): Implement. *)
+                      [%craise] span "Partial borrow not supported yet"
                 else VBorrow bc
 
               (* If no concrete borrows/loans and we can end borrows (we are not

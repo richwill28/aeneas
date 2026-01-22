@@ -193,6 +193,27 @@ let prepare_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
               let bid, sid = push_abs_for_shared_value abs sv bid sid in
               VSharedBorrow (bid, sid)
             else super#visit_VSharedBorrow env bid sid
+
+      method! visit_VPartialBorrow _env pbs =
+        (* Handle partial borrows - check each shared/reserved borrow *)
+        let pbs =
+          List.map
+            (fun (pb : partial_borrow) ->
+              match pb.content with
+              | PBShared (bid, sid) -> (
+                  match BorrowId.Map.find_opt bid !loan_to_shared_value with
+                  | None -> pb
+                  | Some (abs, sv) ->
+                      if not abs.can_end then
+                        let bid, sid =
+                          push_abs_for_shared_value abs sv bid sid
+                        in
+                        { pb with content = PBShared (bid, sid) }
+                      else pb)
+              | PBReservedMut _ | PBMut _ -> pb)
+            pbs
+        in
+        VPartialBorrow pbs
     end
   in
   let ctx = visitor#visit_eval_ctx () ctx in
@@ -348,6 +369,15 @@ let compute_ctx_fresh_ordered_symbolic_values (span : Meta.span)
             | _ -> [%craise] span "Unreachable"
           in
           self#visit_tvalue env v
+
+        method! visit_VPartialBorrow env pbs =
+          let open InterpreterBorrowsCore in
+          List.iter
+            (fun (pb : partial_borrow) ->
+              match pb.content with
+              | PBShared (bid, sid) -> self#visit_VSharedBorrow env bid sid
+              | _ -> ())
+            pbs
 
         method! visit_symbolic_value_id _ id =
           if not (SymbolicValueId.Set.mem id !found_sids) then (
@@ -1030,7 +1060,10 @@ let destructure_shared_loans (span : Meta.span) (fixed_aids : AbsId.Set.t) :
           | VMutBorrow (lid, v) ->
               let v, avl = destructure_value abs v in
               (VBorrow (VMutBorrow (lid, v)), avl)
-          | VReservedMutBorrow _ -> [%internal_error] span)
+          | VReservedMutBorrow _ -> [%internal_error] span
+          (* TODO(view): Implement. *)
+          | VPartialBorrow _ ->
+              [%craise] span "Partial borrow not supported yet")
       | VLoan lc -> (
           match lc with
           | VSharedLoan (lid, sv) ->
@@ -1109,6 +1142,9 @@ let destructure_shared_loans (span : Meta.span) (fixed_aids : AbsId.Set.t) :
                 [%internal_error] span
             | AEndedIgnoredMutBorrow _ -> (bc, [])
             | AProjSharedBorrow _ -> [%craise] span "Not implemented"
+            (* TODO(view): Implement. *)
+            | APartialBorrow _ ->
+                [%craise] span "Partial borrow not supported yet"
           in
           (ABorrow bc, avl)
       | ASymbolic _ | AIgnored _ -> (av.value, [])

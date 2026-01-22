@@ -10,6 +10,66 @@ open InterpreterBorrowsCore
 (** The local logger *)
 let log = Logging.projectors_log
 
+(** Project a type by following a path of field names. Given a base type and a
+    path like ["field1"; "field2"], this function returns the type of the nested
+    field. *)
+let rec project_type_by_path (span : Meta.span) (ctx : eval_ctx) (base_ty : ty)
+    (path : string list) : ty =
+  match path with
+  | [] -> base_ty
+  | segment :: rest ->
+      let field_ty =
+        match base_ty with
+        | TAdt { id = TTuple; generics = { types; _ } } ->
+            (* For tuples, segment should be a numeric index. *)
+            let field_id =
+              match int_of_string_opt segment with
+              | Some idx -> FieldId.of_int idx
+              | None ->
+                  [%craise] span
+                    ("Expected numeric index for tuple projection, got: "
+                   ^ segment)
+            in
+            FieldId.nth types field_id
+        | TAdt { id = TAdtId def_id; generics } ->
+            (* Look up the type declaration. *)
+            let type_decl = ctx_lookup_type_decl span ctx def_id in
+            let fields =
+              match type_decl.kind with
+              | Struct fields -> fields
+              | Enum _ | Union _ | Opaque | Alias _ | TDeclError _ ->
+                  [%craise] span
+                    "Cannot project enum/union/opaque/alias/error types"
+            in
+            (* Find the field with the matching name. *)
+            let field =
+              List.find_opt
+                (fun (f : field) ->
+                  match f.field_name with
+                  | Some name -> name = segment
+                  | None -> false)
+                fields
+            in
+            let field =
+              match field with
+              | Some f -> f
+              | None ->
+                  let fmt_env = Print.Contexts.eval_ctx_to_fmt_env ctx in
+                  [%craise] span
+                    ("Path segment not found: " ^ segment ^ " in type "
+                    ^ Print.Types.name_to_string fmt_env
+                        type_decl.item_meta.name)
+            in
+            (* Instantiate the field type with the generics. *)
+            Subst.ty_substitute
+              (Subst.make_subst_from_generics type_decl.generics generics)
+              field.field_ty
+        | _ ->
+            [%craise] span
+              ("Cannot project path through non-ADT type: " ^ show_ty base_ty)
+      in
+      project_type_by_path span ctx field_ty rest
+
 (** [ty] shouldn't contain erased regions *)
 let rec apply_proj_borrows_on_shared_borrow (span : Meta.span) (ctx : eval_ctx)
     (regions : RegionId.Set.t) (v : tvalue) (ty : ty) : abstract_shared_borrows
@@ -120,7 +180,6 @@ let rec apply_proj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
           AAdt { variant_id = adt.variant_id; fields = proj_fields }
       | VBottom, _ -> [%craise] span "Unreachable"
       | VBorrow bc, TRef (r, ref_ty, kind, _view) ->
-          (* TODO(view): Add view support. *)
           if
             (* Check if the region is in the set of projected regions (note that
              * we never project over static regions) *)
@@ -152,6 +211,43 @@ let rec apply_proj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
               | VReservedMutBorrow _, _ ->
                   [%craise] span
                     "Can't apply a proj_borrow over a reserved mutable borrow"
+              | VPartialBorrow pbs, _ ->
+                  APartialBorrow
+                    (List.map
+                       (fun (pb : partial_borrow) ->
+                         let field_ty =
+                           project_type_by_path span ctx ref_ty pb.path
+                         in
+                         let field_ref_kind =
+                           match pb.content with
+                           | PBShared _ -> RShared
+                           | PBMut _ | PBReservedMut _ -> RMut
+                         in
+                         let field_ref_ty =
+                           TRef (r, field_ty, field_ref_kind, None)
+                         in
+                         let field_ref_ety =
+                           Substitute.erase_regions field_ref_ty
+                         in
+                         let borrow_v : tvalue =
+                           {
+                             value = VBorrow (pbc_to_bc pb.content);
+                             ty = field_ref_ety;
+                           }
+                         in
+                         let projected =
+                           apply_proj_borrows span check_symbolic_no_ended ctx
+                             regions borrow_v field_ref_ty
+                         in
+                         ({
+                            path = pb.path;
+                            content =
+                              (match projected.value with
+                              | ABorrow abc -> abc_to_apbc span abc
+                              | _ -> [%craise] span "Unexpected");
+                          }
+                           : apartial_borrow))
+                       pbs)
               | _ -> [%craise] span "Unreachable"
             in
             ABorrow bc
@@ -191,6 +287,43 @@ let rec apply_proj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
               | VReservedMutBorrow _, _ ->
                   [%craise] span
                     "Can't apply a proj_borrow over a reserved mutable borrow"
+              | VPartialBorrow pbs, _ ->
+                  APartialBorrow
+                    (List.map
+                       (fun (pb : partial_borrow) ->
+                         let field_ty =
+                           project_type_by_path span ctx ref_ty pb.path
+                         in
+                         let field_ref_kind =
+                           match pb.content with
+                           | PBShared _ -> RShared
+                           | PBMut _ | PBReservedMut _ -> RMut
+                         in
+                         let field_ref_ty =
+                           TRef (r, field_ty, field_ref_kind, None)
+                         in
+                         let field_ref_ety =
+                           Substitute.erase_regions field_ref_ty
+                         in
+                         let borrow_v : tvalue =
+                           {
+                             value = VBorrow (pbc_to_bc pb.content);
+                             ty = field_ref_ety;
+                           }
+                         in
+                         let projected =
+                           apply_proj_borrows span check_symbolic_no_ended ctx
+                             regions borrow_v field_ref_ty
+                         in
+                         ({
+                            path = pb.path;
+                            content =
+                              (match projected.value with
+                              | ABorrow abc -> abc_to_apbc span abc
+                              | _ -> [%craise] span "Unexpected");
+                          }
+                           : apartial_borrow))
+                       pbs)
               | _ -> [%craise] span "Unreachable"
             in
             ABorrow bc
@@ -276,6 +409,43 @@ let rec apply_eproj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
             | VReservedMutBorrow _, _ ->
                 [%craise] span
                   "Can't apply a proj_borrow over a reserved mutable borrow"
+            | VPartialBorrow pbs, _ ->
+                EBorrow
+                  (EPartialBorrow
+                     (List.map
+                        (fun (pb : partial_borrow) ->
+                          let field_ty =
+                            project_type_by_path span ctx ref_ty pb.path
+                          in
+                          let field_ref_kind =
+                            match pb.content with
+                            | PBShared _ -> RShared
+                            | PBMut _ | PBReservedMut _ -> RMut
+                          in
+                          let field_ref_ty =
+                            TRef (r, field_ty, field_ref_kind, None)
+                          in
+                          let field_ref_ety =
+                            Substitute.erase_regions field_ref_ty
+                          in
+                          let borrow_v : tvalue =
+                            {
+                              value = VBorrow (pbc_to_bc pb.content);
+                              ty = field_ref_ety;
+                            }
+                          in
+                          let projected =
+                            apply_eproj_borrows span check_symbolic_no_ended ctx
+                              regions borrow_v field_ref_ty
+                          in
+                          {
+                            Values.path = pb.path;
+                            content =
+                              (match projected.value with
+                              | EBorrow ebc -> ebc_to_epbc span ebc
+                              | _ -> [%craise] span "Unexpected");
+                          })
+                        pbs))
             | _ -> [%craise] span "Unreachable"
           else begin
             (* Not in the set: ignore the borrow, but project the borrowed
@@ -302,6 +472,43 @@ let rec apply_eproj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
             | VReservedMutBorrow _, _ ->
                 [%craise] span
                   "Can't apply a proj_borrow over a reserved mutable borrow"
+            | VPartialBorrow pbs, _ ->
+                EBorrow
+                  (EPartialBorrow
+                     (List.map
+                        (fun (pb : Values.partial_borrow) ->
+                          let field_ty =
+                            project_type_by_path span ctx ref_ty pb.path
+                          in
+                          let field_ref_kind =
+                            match pb.content with
+                            | PBShared _ -> RShared
+                            | PBMut _ | PBReservedMut _ -> RMut
+                          in
+                          let field_ref_ty =
+                            TRef (r, field_ty, field_ref_kind, None)
+                          in
+                          let field_ref_ety =
+                            Substitute.erase_regions field_ref_ty
+                          in
+                          let borrow_v : tvalue =
+                            {
+                              value = VBorrow (pbc_to_bc pb.content);
+                              ty = field_ref_ety;
+                            }
+                          in
+                          let projected =
+                            apply_eproj_borrows span check_symbolic_no_ended ctx
+                              regions borrow_v field_ref_ty
+                          in
+                          {
+                            Values.path = pb.path;
+                            content =
+                              (match projected.value with
+                              | EBorrow ebc -> ebc_to_epbc span ebc
+                              | _ -> [%craise] span "Unexpected");
+                          })
+                        pbs))
             | _ -> [%craise] span "Unreachable"
           end
       | VLoan _, _ -> [%craise] span "Unreachable"

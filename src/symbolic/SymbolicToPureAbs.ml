@@ -150,6 +150,9 @@ and aborrow_content_to_given_back_ty_aux ~(filter : bool)
   | AEndedIgnoredMutBorrow _
   | AEndedSharedBorrow
   | AProjSharedBorrow _ -> [%craise] ctx.span "Unreachable"
+  | APartialBorrow _ ->
+      (* TODO(view): Implement. *)
+      [%craise] ctx.span "Partial borrow not supported yet"
 
 and aproj_to_given_back_ty_aux (aproj : V.aproj) (ty : T.ty) (ctx : bs_ctx) :
     ty option =
@@ -243,6 +246,14 @@ let compute_tevalue_proj_kind (span : Meta.span) (type_infos : type_infos)
           match bc with
           | EIgnoredMutBorrow _ | EEndedIgnoredMutBorrow _ -> ()
           | EMutBorrow _ | EEndedMutBorrow _ -> has_mut_borrows := true
+          | EPartialBorrow pbs ->
+              List.iter
+                (fun (pb : V.epartial_borrow) ->
+                  match pb.content with
+                  | EPBMutBorrow _ | EPBEndedMutBorrow _ ->
+                      has_mut_borrows := true
+                  | EPBIgnoredMutBorrow _ | EPBEndedIgnoredMutBorrow _ -> ())
+                pbs
         end;
         (* Continue exploring as a sanity check: we want to make sure we don't find loans *)
         super#visit_EBorrow ty bc
@@ -410,7 +421,10 @@ let eoutput_to_pat (ctx : bs_ctx) (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref)
             [%sanity_check] span (pm = PNone);
             [%sanity_check] span (ValuesUtils.is_eignored child.value);
             let ctx, e = add_concrete ctx bid output.ty in
-            (ctx, Some e))
+            (ctx, Some e)
+        | V.EPartialBorrow _ ->
+            (* TODO(view): Implemented. *)
+            [%craise] span "Partial borrow not supported yet")
     | V.ESymbolic (pm, proj) ->
         [%sanity_check] span (pm = PNone);
         begin
@@ -815,7 +829,10 @@ let register_inputs (ctx : bs_ctx) (rids : T.RegionId.Set.t)
             [%sanity_check] span (pm = PNone)
         | V.AEndedMutBorrow _ | V.AEndedSharedBorrow -> [%internal_error] span
         | V.AEndedIgnoredMutBorrow _ -> [%craise] span "Not implemented yet"
-        | V.AProjSharedBorrow _ -> ())
+        | V.AProjSharedBorrow _ -> ()
+        | V.APartialBorrow _ ->
+            (* TODO(view): Implement. *)
+            [%craise] span "Partial borrow not supported yet")
     | V.ASymbolic (pm, proj) -> (
         [%sanity_check] span (pm = PNone);
         match proj with
@@ -896,7 +913,10 @@ let register_outputs (ctx : bs_ctx) (bound_outputs : bound_borrows_loans)
             [%sanity_check] span (pm = PNone)
         | V.AEndedMutBorrow _ | V.AEndedSharedBorrow -> [%internal_error] span
         | V.AEndedIgnoredMutBorrow _ -> [%craise] span "Not implemented yet"
-        | V.AProjSharedBorrow _ -> ())
+        | V.AProjSharedBorrow _ -> ()
+        | V.APartialBorrow _ ->
+            (* TODO(view): Implement. *)
+            [%craise] span "Partial borrow not supported yet")
     | V.ASymbolic (pm, proj) -> (
         [%sanity_check] span (pm = PNone);
         match proj with

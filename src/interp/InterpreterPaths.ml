@@ -189,6 +189,9 @@ let rec project_value (span : Meta.span) (access : projection_access)
                 fun (ctx, updated) ->
                   let value = VBorrow (VMutBorrow (bid, updated)) in
                   (ctx, { v with value }) )
+        | VPartialBorrow _ ->
+            (* TODO(view): Implement. *)
+            [%craise] span "Partial borrow not supported yet"
       in
       res
   | _, VLoan lc, _ -> begin
@@ -542,6 +545,11 @@ let rec end_loans_at_place (config : config) (span : Meta.span)
             (* We need to activate reserved borrows *)
             let res = promote_reserved_mut_borrow config span bid sid ctx in
             raise (UpdateCtx res)
+        | VPartialBorrow pbs ->
+            List.iter
+              (fun (pb : partial_borrow) ->
+                super#visit_borrow_content env (pbc_to_bc pb.content))
+              pbs
 
       method! visit_loan_content env lc =
         match lc with

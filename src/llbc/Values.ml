@@ -141,6 +141,19 @@ and borrow_content =
             l = Vec::len(move v2); // We use v2 here
             Vec::push(move v1, move l); // v1 gets promoted to a mutable borrow here
           ]} *)
+  | VPartialBorrow of partial_borrow list
+      (** A partial borrow, which borrows specific field paths of a structured
+          value. Each element in the list maps a field path to a borrow. *)
+
+(** A partial borrow element: a path mapped to a borrow. *)
+and partial_borrow = { path : string list; content : partial_borrow_content }
+
+(** The content of borrow in a partial borrow This mirrors the base cases of
+    [borrow_content] but excludes [VPartialBorrow]. *)
+and partial_borrow_content =
+  | PBShared of borrow_id * shared_borrow_id
+  | PBMut of borrow_id * tvalue
+  | PBReservedMut of borrow_id * shared_borrow_id
 
 and loan_content = VSharedLoan of loan_id * tvalue | VMutLoan of loan_id
 
@@ -898,6 +911,22 @@ and aborrow_content =
 
           TODO: maybe we should factorized [ASharedBorrow] and
           [AProjSharedBorrow]. *)
+  | APartialBorrow of apartial_borrow list
+      (** An abstract partial borrow, which borrows specific field paths of a
+          structured value. Each element in the list maps a field path to an
+          abstract borrow. *)
+
+(** TODO(view): Naively, one can consider an [APartialBorrow] to be ended when
+    every borrow inside [APartialBorrow] has ended, i.e. either
+    [AEndedMutBorrow], [AEndedSharedBorrow], or [AEndedIgnoredMutBorrow]. The
+    problem with this is that it's not immediately obvious when an
+    [APartialBorrow] has ended. One must perform a check.
+
+    Alternatively, we could define an [AEndedPartialBorrow] variant to represent
+    a partial borrow that has ended. However, the semantics are unclear: does
+    "ended" mean that all borrows within the partial borrow have ended, or just
+    one of them? Given this ambiguity, and the uncertain utility of such a
+    variant, we currently avoid introducing it. *)
 
 (** See the explanations for {!AIgnoredMutBorrow} *)
 and aended_ignored_mut_borrow = {
@@ -910,6 +939,20 @@ and aended_ignored_mut_borrow = {
           Rk.: *DO NOT* use [visit_AEndedIgnoredMutLoan]. See the comment for
           {!AEndedMutLoan}. *)
 }
+
+(** A partial abstract borrow element: a path mapped to an abstract borrow. *)
+and apartial_borrow = { path : string list; content : apartial_borrow_content }
+
+(** The content of borrow in a partial abstract borrow. This mirrors the base
+    cases of [aborrow_content] but excludes [APartialBorrow]. *)
+and apartial_borrow_content =
+  | APBMutBorrow of proj_marker * borrow_id * tavalue
+  | APBSharedBorrow of proj_marker * borrow_id * shared_borrow_id
+  | APBIgnoredMutBorrow of borrow_id option * tavalue
+  | APBEndedMutBorrow of aended_mut_borrow_meta * tavalue
+  | APBEndedSharedBorrow
+  | APBEndedIgnoredMutBorrow of aended_ignored_mut_borrow
+  | APBProjSharedBorrow of abstract_shared_borrows
 
 (** Rem.: the of evalues is not to be understood in the same manner as for
     values. To be more precise, shared aloans have the borrow type (i.e., a
@@ -1367,6 +1410,20 @@ and eborrow_content =
           for the synthesis, with in particular the (symbolic) value that was
           given back upon ending the borrow. *)
   | EEndedIgnoredMutBorrow of eended_ignored_mut_borrow
+  | EPartialBorrow of epartial_borrow list
+      (** A partial borrow in an abstraction expression. Each element in the
+          list maps a field path to a borrow expression. *)
+
+(** A partial borrow element: a path mapped to a borrow expression. *)
+and epartial_borrow = { path : string list; content : epartial_borrow_content }
+
+(** The content of borrow in a partial expression borrow. This mirrors the base
+    cases of [eborrow_content] but excludes [EPartialBorrow]. *)
+and epartial_borrow_content =
+  | EPBMutBorrow of proj_marker * borrow_id * tevalue
+  | EPBIgnoredMutBorrow of borrow_id option * tevalue
+  | EPBEndedMutBorrow of eended_mut_borrow_meta * tevalue
+  | EPBEndedIgnoredMutBorrow of eended_ignored_mut_borrow
 
 (** See the explanations for {!AIgnoredMutBorrow} *)
 and eended_ignored_mut_borrow = {

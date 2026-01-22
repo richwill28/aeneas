@@ -232,6 +232,9 @@ let check_loans_borrows_relation_invariant (span : Meta.span) (ctx : eval_ctx) :
           | VMutBorrow (bid, _) -> register_borrow BMut bid None
           | VReservedMutBorrow (bid, sid) ->
               register_borrow BReserved bid (Some sid)
+          (* TODO(view): Implement. *)
+          | VPartialBorrow _ ->
+              [%craise] span "Partial borrow not supported yet"
         in
         (* Continue exploring *)
         super#visit_borrow_content env bc
@@ -250,6 +253,9 @@ let check_loans_borrows_relation_invariant (span : Meta.span) (ctx : eval_ctx) :
           | AProjSharedBorrow _ ->
               (* Do nothing *)
               ()
+          (* TODO(view): Implement. *)
+          | APartialBorrow _ ->
+              [%craise] span "Partial borrow not supported yet"
         in
         (* Continue exploring *)
         super#visit_aborrow_content env bc
@@ -312,6 +318,9 @@ let check_borrowed_values_invariant (span : Meta.span) (ctx : eval_ctx) : unit =
               [%sanity_check] span (not info.outer_borrow);
               set_outer_shared info
           | VMutBorrow (_, _) -> set_outer_mut info
+          (* TODO(view): Implement. *)
+          | VPartialBorrow _ ->
+              [%craise] span "Partial borrow not supported yet"
         in
         (* Continue exploring *)
         super#visit_borrow_content info bc
@@ -343,6 +352,9 @@ let check_borrowed_values_invariant (span : Meta.span) (ctx : eval_ctx) : unit =
           | AIgnoredMutBorrow _ | AEndedMutBorrow _ | AEndedIgnoredMutBorrow _
             -> set_outer_mut info
           | AProjSharedBorrow _ -> set_outer_shared info
+          (* TODO(view): Implement. *)
+          | APartialBorrow _ ->
+              [%craise] span "Partial borrow not supported yet"
         in
         (* Continue exploring *)
         super#visit_aborrow_content info bc

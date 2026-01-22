@@ -225,6 +225,9 @@ let compute_abs_borrows_loans_maps (span : Meta.span) (explore : abs -> bool)
             (* Ignore the id of the borrow, if there is *)
             self#visit_tavalue (abs, pm) child
         | AEndedMutBorrow _ | AEndedSharedBorrow -> [%craise] span "Unreachable"
+        | APartialBorrow _ ->
+            (* TODO(view): Implement. *)
+            [%craise] span "Partial borrow not supported yet"
 
       method! visit_borrow_id _ _ = [%internal_error] span
       method! visit_loan_id (abs, pm) lid = register_loan_id abs pm lid
@@ -387,6 +390,10 @@ module MakeMatcher (M : PrimMatcher) : Matcher = struct
                  reserved borrow should be eliminated very quickly - they are introduced
                  just before function calls which activate them *)
               [%craise] M.span "Unexpected"
+          (* TODO(view): Implement. And be careful here with the matches. *)
+          | VPartialBorrow _, _
+          | _, VPartialBorrow _ ->
+              [%craise] M.span "Partial borrow not supported yet"
         in
         { value = VBorrow bc; ty }
     | VLoan lc0, VLoan lc1 -> begin
@@ -592,7 +599,10 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
       | VBorrow bc -> (
           match bc with
           | VSharedBorrow _ | VReservedMutBorrow _ -> v.value
-          | VMutBorrow (bid, v) -> VBorrow (VMutBorrow (bid, refresh v)))
+          | VMutBorrow (bid, v) -> VBorrow (VMutBorrow (bid, refresh v))
+          | VPartialBorrow _ ->
+              (* TODO(view): Implement. *)
+              [%craise] span "Partial borrow not supported yet")
       | VLoan lc -> (
           match lc with
           | VSharedLoan (lid, sv) -> VLoan (VSharedLoan (lid, refresh sv))
