@@ -534,7 +534,7 @@ let rec end_loans_at_place (config : config) (span : Meta.span)
    * context, we raise an exception wrapping the updated context.
    *)
   let obj =
-    object
+    object (self)
       inherit [_] iter_tvalue as super
 
       method! visit_borrow_content env bc =
@@ -548,7 +548,7 @@ let rec end_loans_at_place (config : config) (span : Meta.span)
         | VPartialBorrow pbs ->
             List.iter
               (fun (pb : partial_borrow) ->
-                super#visit_borrow_content env (pbc_to_bc pb.content))
+                self#visit_borrow_content env (pbc_to_bc pb.content))
               pbs
 
       method! visit_loan_content env lc =

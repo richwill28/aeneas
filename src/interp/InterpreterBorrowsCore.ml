@@ -457,7 +457,7 @@ let update_aloan (span : Meta.span) (ek : exploration_kind) (l : BorrowId.id)
 let lookup_borrow_opt (span : Meta.span) (ek : exploration_kind)
     (l : unique_borrow_id) (ctx : eval_ctx) : g_borrow_content option =
   let obj =
-    object
+    object (self)
       inherit [_] iter_eval_ctx as super
 
       method! visit_borrow_content env bc =
@@ -478,7 +478,7 @@ let lookup_borrow_opt (span : Meta.span) (ek : exploration_kind)
         | VPartialBorrow pbs ->
             List.iter
               (fun (pb : partial_borrow) ->
-                super#visit_borrow_content env (pbc_to_bc pb.content))
+                self#visit_borrow_content env (pbc_to_bc pb.content))
               pbs
 
       method! visit_loan_content env lc =
@@ -637,7 +637,7 @@ let update_borrow (span : Meta.span) (ek : exploration_kind)
   in
 
   let obj =
-    object
+    object (self)
       inherit [_] map_eval_ctx as super
 
       method! visit_borrow_content env bc =
@@ -663,7 +663,7 @@ let update_borrow (span : Meta.span) (ek : exploration_kind)
                      pb with
                      content =
                        bc_to_pbc span
-                         (super#visit_borrow_content env (pbc_to_bc pb.content));
+                         (self#visit_borrow_content env (pbc_to_bc pb.content));
                    })
                  pbs)
 
