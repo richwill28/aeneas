@@ -969,7 +969,7 @@ let compute_regions_hierarchy_for_fun_call fresh_abs_id
 
 let abs_is_empty (abs : abs) : bool =
   let visitor =
-    object
+    object (self)
       inherit [_] iter_abs as super
 
       method! visit_ASymbolic env pm proj =
@@ -989,7 +989,7 @@ let abs_is_empty (abs : abs) : bool =
         | APartialBorrow apbs ->
             List.iter
               (fun (apb : apartial_borrow) ->
-                super#visit_ABorrow env (apbc_to_abc apb.content))
+                self#visit_ABorrow env (apbc_to_abc apb.content))
               apbs);
         super#visit_ABorrow env bc
 

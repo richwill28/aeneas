@@ -347,7 +347,7 @@ let update_loan (span : Meta.span) (ek : exploration_kind) (l : BorrowId.id)
   in
 
   let obj =
-    object
+    object (self)
       inherit [_] map_eval_ctx as super
 
       method! visit_borrow_content env bc =
@@ -367,7 +367,7 @@ let update_loan (span : Meta.span) (ek : exploration_kind) (l : BorrowId.id)
                      pb with
                      content =
                        bc_to_pbc span
-                         (super#visit_borrow_content env (pbc_to_bc pb.content));
+                         (self#visit_borrow_content env (pbc_to_bc pb.content));
                    })
                  pbs)
 
@@ -517,7 +517,7 @@ let lookup_borrow_opt (span : Meta.span) (ek : exploration_kind)
         | APartialBorrow apbs ->
             List.iter
               (fun (apb : apartial_borrow) ->
-                super#visit_aborrow_content env (apbc_to_abc apb.content))
+                self#visit_aborrow_content env (apbc_to_abc apb.content))
               apbs
 
       method! visit_abs env abs =
@@ -546,7 +546,7 @@ let lookup_borrow (span : Meta.span) (ek : exploration_kind)
 let lookup_eborrow_opt (span : Meta.span) (ek : exploration_kind)
     (l : borrow_id) (ctx : eval_ctx) : eborrow_content option =
   let obj =
-    object
+    object (self)
       inherit [_] iter_eval_ctx as super
 
       method! visit_eborrow_content env bc =
@@ -562,7 +562,7 @@ let lookup_eborrow_opt (span : Meta.span) (ek : exploration_kind)
         | EPartialBorrow epbs ->
             List.iter
               (fun (epb : epartial_borrow) ->
-                super#visit_eborrow_content env (epbc_to_ebc epb.content))
+                self#visit_eborrow_content env (epbc_to_ebc epb.content))
               epbs
 
       method! visit_abs env abs =
@@ -715,7 +715,7 @@ let update_aborrow (span : Meta.span) (ek : exploration_kind)
   in
 
   let obj =
-    object
+    object (self)
       inherit [_] map_eval_ctx as super
 
       method! visit_ABorrow env bc =
@@ -749,7 +749,7 @@ let update_aborrow (span : Meta.span) (ek : exploration_kind)
                         apb with
                         content =
                           (match
-                             super#visit_ABorrow env (apbc_to_abc apb.content)
+                             self#visit_ABorrow env (apbc_to_abc apb.content)
                            with
                           | ABorrow abc -> abc_to_apbc span abc
                           | _ -> [%craise] span "Unexpected");
@@ -774,7 +774,7 @@ let update_aborrow (span : Meta.span) (ek : exploration_kind)
                         epb with
                         content =
                           (match
-                             super#visit_EBorrow env (epbc_to_ebc epb.content)
+                             self#visit_EBorrow env (epbc_to_ebc epb.content)
                            with
                           | EBorrow ebc -> ebc_to_epbc span ebc
                           | _ -> [%craise] span "Unexpected");
@@ -1556,7 +1556,7 @@ let no_aproj_over_symbolic_in_context (span : Meta.span)
 
 let abs_has_non_ended_eborrows (abs : abs) : bool =
   let visitor =
-    object
+    object (self)
       inherit [_] iter_abs as super
 
       method! visit_eborrow_content env bc =
@@ -1565,7 +1565,7 @@ let abs_has_non_ended_eborrows (abs : abs) : bool =
         | EPartialBorrow epbs ->
             List.iter
               (fun (epb : epartial_borrow) ->
-                super#visit_eborrow_content env (epbc_to_ebc epb.content))
+                self#visit_eborrow_content env (epbc_to_ebc epb.content))
               epbs
         | EIgnoredMutBorrow _ | EEndedMutBorrow _ | EEndedIgnoredMutBorrow _ ->
             ());

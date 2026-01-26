@@ -2385,7 +2385,7 @@ let project_context (span : Meta.span) (fixed_aids : AbsId.Set.t)
                  (List.map
                     (fun (epb : epartial_borrow) ->
                       match
-                        super#visit_EBorrow env (epbc_to_ebc epb.content)
+                        self#visit_EBorrow env (epbc_to_ebc epb.content)
                       with
                       | EBorrow ebc ->
                           { epb with content = ebc_to_epbc span ebc }

@@ -88,7 +88,7 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
      outer shared loan or mutable borrow we dived into (because we need to
      end it before ending the target borrow). *)
   let visitor =
-    object
+    object (self)
       inherit [_] map_eval_ctx as super
 
       (** We reimplement {!visit_Loan} because we may have to update the outer
@@ -223,7 +223,7 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
                  (List.map
                     (fun (apb : apartial_borrow) ->
                       match
-                        super#visit_ABorrow outer (apbc_to_abc apb.content)
+                        self#visit_ABorrow outer (apbc_to_abc apb.content)
                       with
                       | ABorrow abc ->
                           { apb with content = abc_to_apbc span abc }
@@ -1238,7 +1238,7 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
      exactly that.
   *)
   let visitor =
-    object
+    object (self)
       inherit [_] iter_abs as super
 
       method! visit_aborrow_content env bc =
@@ -1270,7 +1270,7 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
         | APartialBorrow apbs ->
             List.iter
               (fun (apb : apartial_borrow) ->
-                super#visit_aborrow_content env (apbc_to_abc apb.content))
+                self#visit_aborrow_content env (apbc_to_abc apb.content))
               apbs
 
       method! visit_aproj env sproj =
@@ -2181,7 +2181,7 @@ let abs_mut_borrows_loans_in_fixed span (ctx : eval_ctx)
   in
 
   let visit_borrows =
-    object
+    object (self)
       inherit [_] iter_eval_ctx as super
 
       method! visit_borrow_content _ _ =
@@ -2215,7 +2215,7 @@ let abs_mut_borrows_loans_in_fixed span (ctx : eval_ctx)
             (* TODO(view): Not sure if this is correct. *)
             List.iter
               (fun (apb : apartial_borrow) ->
-                super#visit_aborrow_content env (apbc_to_abc apb.content))
+                self#visit_aborrow_content env (apbc_to_abc apb.content))
               apbs
 
       method! visit_aproj env proj =
