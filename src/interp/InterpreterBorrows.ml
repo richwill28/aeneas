@@ -128,9 +128,49 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
                in case we haven't dived into a borrow/loan yet. *)
               let outer = update_outer_borrow outer (MutBorrow l') in
               VBorrow (super#visit_VMutBorrow outer l' bv)
-        | VPartialBorrow _ ->
-            (* TODO(view): Implement. *)
-            [%craise] span "Partial borrow not supported yet"
+        | VPartialBorrow pbs -> (
+            (* Check if the borrow we are looking for is in the partial borrow. *)
+            let rec find_and_remove acc = function
+              | [] -> None
+              | (pb : partial_borrow) :: rest ->
+                  let matches, borrowed_value_opt =
+                    match (pb.content, l) with
+                    | PBShared (_, sid), UShared l' when sid = l' -> (true, None)
+                    | PBMut (bid, bv), UMut l' when bid = l' -> (true, Some bv)
+                    | PBReservedMut (_, sid), UShared l' when sid = l' ->
+                        (true, None)
+                    | _ -> (false, None)
+                  in
+                  if matches then
+                    Some (pb, borrowed_value_opt, List.rev_append acc rest)
+                  else find_and_remove (pb :: acc) rest
+            in
+            match find_and_remove [] pbs with
+            | Some (pb, borrowed_value_opt, remaining) ->
+                (* Found the borrow we are looking for. *)
+                raise_if_priority outer borrowed_value_opt;
+                (* Register the update. *)
+                set_replaced_bc outer.abs_id (Concrete (pbc_to_bc pb.content));
+                if remaining = [] then VBottom
+                else VBorrow (VPartialBorrow remaining)
+            | None ->
+                (* Borrow not found directly, explore the mutable borrow values
+                   for nested borrows. *)
+                let new_pbs =
+                  List.map
+                    (fun (pb : partial_borrow) ->
+                      match pb.content with
+                      | PBMut (bid, bv) ->
+                          (* Update outer borrows and explore the borrowed value. *)
+                          let outer =
+                            update_outer_borrow outer (MutBorrow bid)
+                          in
+                          let bv' = super#visit_tvalue outer bv in
+                          { pb with content = PBMut (bid, bv') }
+                      | _ -> pb)
+                    pbs
+                in
+                VBorrow (VPartialBorrow new_pbs))
 
       (** We reimplement {!visit_ALoan} because we may have to update the outer
           borrows *)
@@ -808,8 +848,14 @@ let give_back_concrete (span : Meta.span) (l : unique_borrow_id)
       (* We have nothing to update in the context *)
       ctx
   | Concrete (VPartialBorrow _) ->
-      (* TODO(view): Implement. *)
-      [%craise] span "Partial borrow not supported yet"
+      (* Partial borrows are decomposed into individual borrows when ended,
+         so we should never receive a partial borrow here. If we do, it's
+         because the borrow was extracted from a partial borrow and we need
+         to handle it as such - but this case should be handled by the
+         individual borrow content (VMutBorrow, VSharedBorrow, etc.) *)
+      [%craise] span
+        "Unexpected: partial borrow should be decomposed into individual \
+         borrows"
   | Abstract _ ->
       (* We shouldn't get here: ending borrows inside abstractions is taken care
        of separately *)
@@ -999,13 +1045,21 @@ and end_shared_loan_aux (config : config) (span : Meta.span)
       method! visit_VSharedBorrow _ bid sid =
         if bid = l then raise (FoundSharedBorrowId (bid, sid)) else ()
 
+      (* TODO(view): Not sure if this is necessary. *)
+      method! visit_VReservedMutBorrow _ bid sid =
+        if bid = l then raise (FoundSharedBorrowId (bid, sid)) else ()
+
       method! visit_VPartialBorrow _ pbs =
         List.iter
           (fun (pb : partial_borrow) ->
             match pb.content with
             | PBShared (bid, sid) ->
                 if bid = l then raise (FoundSharedBorrowId (bid, sid))
-            | PBReservedMut _ | PBMut _ -> ())
+            (* TODO(view): Not sure if this is necessary. *)
+            | PBReservedMut (bid, sid) ->
+                (* Reserved mut borrows also reference the loan and need to be ended. *)
+                if bid = l then raise (FoundSharedBorrowId (bid, sid))
+            | PBMut _ -> ())
           pbs
 
       method! visit_ASharedBorrow _ pm bid sid =
@@ -1286,8 +1340,12 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
         match bc with
         | VSharedBorrow _ | VMutBorrow (_, _) -> raise (FoundBorrowContent bc)
         | VReservedMutBorrow _ -> [%craise] span "Unreachable"
-        (* TODO(view): Implement. *)
-        | VPartialBorrow _ -> [%craise] span "Partial borrow not supported yet"
+        | VPartialBorrow pbs ->
+            (* Raise for the first borrow component found in the partial borrows. *)
+            List.iter
+              (fun (pb : partial_borrow) ->
+                raise (FoundBorrowContent (pbc_to_bc pb.content)))
+              pbs
     end
   in
   (* Lookup the abstraction *)
@@ -1486,8 +1544,33 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
                  * shared borrow: the value is thus unchanged *)
                 give_back_value span bid v ctx)
         | VReservedMutBorrow _ -> [%craise] span "Unreachable"
-        (* TODO(view): Implement. *)
-        | VPartialBorrow _ -> [%craise] span "Partial borrow not supported yet"
+        | VPartialBorrow pbs ->
+            (* End each partial borrow component individually. *)
+            List.fold_left
+              (fun ctx (pb : partial_borrow) ->
+                match pb.content with
+                | PBShared (_, sid) -> (
+                    match
+                      end_concrete_borrow_in_abs_get_borrow span abs_id
+                        (UShared sid) ctx
+                    with
+                    | Error _ -> [%craise] span "Unreachable"
+                    | Ok (ctx, _) -> ctx)
+                | PBMut (bid, bv) -> (
+                    match
+                      end_concrete_borrow_in_abs_get_borrow span abs_id
+                        (UMut bid) ctx
+                    with
+                    | Error _ -> [%craise] span "Unreachable"
+                    | Ok (ctx, _) -> give_back_value span bid bv ctx)
+                | PBReservedMut (_, sid) -> (
+                    match
+                      end_concrete_borrow_in_abs_get_borrow span abs_id
+                        (UShared sid) ctx
+                    with
+                    | Error _ -> [%craise] span "Unreachable"
+                    | Ok (ctx, _) -> ctx))
+              ctx pbs
       in
       (* Reexplore *)
       end_abstraction_borrows config span chain abs_id ctx
@@ -1973,9 +2056,21 @@ let destructure_abs (span : Meta.span) (abs_kind : abs_kind) ~(can_end : bool)
                we have to end them all and remove the abstraction from the context)
             *)
             [%craise] span "Unreachable"
-        | APartialBorrow _ ->
-            (* TODO(view): Implement. *)
-            [%craise] span "Partial borrow not supported yet")
+        | APartialBorrow apbs ->
+            (* Check all partial borrows are properly ended or empty. *)
+            List.iter
+              (fun (apb : apartial_borrow) ->
+                match apb.content with
+                | APBEndedMutBorrow _
+                | APBEndedSharedBorrow
+                | APBEndedIgnoredMutBorrow _ -> () (* Already ended. *)
+                | APBMutBorrow _
+                | APBSharedBorrow _
+                | APBIgnoredMutBorrow _
+                | APBProjSharedBorrow _ ->
+                    [%craise] span
+                      "Found non-ended borrow in partial borrow during merge")
+              apbs)
     | ASymbolic (_, aproj) -> (
         (* *)
         match aproj with
@@ -2334,9 +2429,36 @@ let rec simplify_dummy_values_useless_abs_aux (config : config)
                         (* There might be shared loans to end inside the borrow *)
                         let v = self#visit_tvalue false v in
                         VBorrow (VMutBorrow (bid, v))
-                  | VPartialBorrow _ ->
-                      (* TODO(view): Implement. *)
-                      [%craise] span "Partial borrow not supported yet"
+                  | VPartialBorrow pbs -> (
+                      (* Check if any partial borrow can be ended *)
+                      let can_end_pb (pb : partial_borrow) =
+                        match pb.content with
+                        | PBShared (bid, _) | PBReservedMut (bid, _) ->
+                            loan_id_not_in_fixed_abs bid
+                        | PBMut (bid, v) ->
+                            (not (concrete_loans_in_value v))
+                            && loan_id_not_in_fixed_abs bid
+                      in
+                      let endable = List.find_opt can_end_pb pbs in
+                      match endable with
+                      | Some pb -> (
+                          match pb.content with
+                          | PBShared (_, sid) | PBReservedMut (_, sid) ->
+                              raise (FoundBorrowId (UShared sid))
+                          | PBMut (bid, _) -> raise (FoundBorrowId (UMut bid)))
+                      | None ->
+                          (* Explore mutable borrows for nested borrows. *)
+                          let new_pbs =
+                            List.map
+                              (fun (pb : partial_borrow) ->
+                                match pb.content with
+                                | PBMut (bid, v) ->
+                                    let v = self#visit_tvalue false v in
+                                    { pb with content = PBMut (bid, v) }
+                                | _ -> pb)
+                              pbs
+                          in
+                          VBorrow (VPartialBorrow new_pbs))
                 else VBorrow bc
 
               (* If no concrete borrows/loans and we can end borrows (we are not

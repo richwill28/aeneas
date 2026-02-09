@@ -546,9 +546,23 @@ let rec end_loans_at_place (config : config) (span : Meta.span)
             let res = promote_reserved_mut_borrow config span bid sid ctx in
             raise (UpdateCtx res)
         | VPartialBorrow pbs ->
+            (* For partial borrows, we need to handle each component separately.
+               Reserved mut borrows inside partial borrows have corresponding
+               shared loans, so we promote them like regular reserved borrows. *)
             List.iter
               (fun (pb : partial_borrow) ->
-                self#visit_borrow_content env (pbc_to_bc pb.content))
+                match pb.content with
+                | PBShared (_, _) -> ()
+                | PBReservedMut (bid, sid) ->
+                    (* Promote the reserved mut borrow to a mut borrow.
+                       The bid is the loan ID of the shared loan. *)
+                    let res =
+                      promote_reserved_mut_borrow config span bid sid ctx
+                    in
+                    raise (UpdateCtx res)
+                | PBMut (_bid, tv) ->
+                    (* Visit the borrowed value inside the mutable borrow *)
+                    self#visit_tvalue env tv)
               pbs
 
       method! visit_loan_content env lc =

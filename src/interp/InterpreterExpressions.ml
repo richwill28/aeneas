@@ -1050,7 +1050,9 @@ let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
                           "Cannot project union/opaque/alias/error types"
                   in
 
-                  (* Find the segment with the matching name. *)
+                  (* Find the segment with the matching name or index.
+                     For tuple structs (where fields have no names), we match
+                     by numeric index. *)
                   let field_id, _ =
                     let rec find_field (idx : int) (fs : field list) :
                         (int * field) option =
@@ -1063,12 +1065,21 @@ let eval_rvalue_ref (config : config) (span : Meta.span) (p : place)
                     in
                     match find_field 0 fields with
                     | Some (idx, fld) -> (FieldId.of_int idx, fld)
-                    | None ->
-                        let fmt_env = Print.Contexts.eval_ctx_to_fmt_env ctx in
-                        [%craise] span
-                          ("Path segment not found: " ^ segment ^ " in type "
-                          ^ Print.Types.name_to_string fmt_env
-                              type_decl.item_meta.name)
+                    | None -> (
+                        (* No field name matched, try parsing segment as a
+                           numeric index (for tuple structs). *)
+                        match int_of_string_opt segment with
+                        | Some idx when idx >= 0 && idx < List.length fields ->
+                            (FieldId.of_int idx, List.nth fields idx)
+                        | _ ->
+                            let fmt_env =
+                              Print.Contexts.eval_ctx_to_fmt_env ctx
+                            in
+                            [%craise] span
+                              ("Path segment not found: " ^ segment
+                             ^ " in type "
+                              ^ Print.Types.name_to_string fmt_env
+                                  type_decl.item_meta.name))
                   in
 
                   (* Get the field type. *)

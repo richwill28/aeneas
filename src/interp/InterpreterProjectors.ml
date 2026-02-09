@@ -41,7 +41,9 @@ let rec project_type_by_path (span : Meta.span) (ctx : eval_ctx) (base_ty : ty)
                   [%craise] span
                     "Cannot project enum/union/opaque/alias/error types"
             in
-            (* Find the field with the matching name. *)
+            (* Find the field with the matching name or index.
+               For tuple structs (where fields have no names), we match
+               by numeric index. *)
             let field =
               List.find_opt
                 (fun (f : field) ->
@@ -53,12 +55,18 @@ let rec project_type_by_path (span : Meta.span) (ctx : eval_ctx) (base_ty : ty)
             let field =
               match field with
               | Some f -> f
-              | None ->
-                  let fmt_env = Print.Contexts.eval_ctx_to_fmt_env ctx in
-                  [%craise] span
-                    ("Path segment not found: " ^ segment ^ " in type "
-                    ^ Print.Types.name_to_string fmt_env
-                        type_decl.item_meta.name)
+              | None -> (
+                  (* No field name matched; try parsing segment as a
+                     numeric index (for tuple structs). *)
+                  match int_of_string_opt segment with
+                  | Some idx when idx >= 0 && idx < List.length fields ->
+                      List.nth fields idx
+                  | _ ->
+                      let fmt_env = Print.Contexts.eval_ctx_to_fmt_env ctx in
+                      [%craise] span
+                        ("Path segment not found: " ^ segment ^ " in type "
+                        ^ Print.Types.name_to_string fmt_env
+                            type_decl.item_meta.name))
             in
             (* Instantiate the field type with the generics. *)
             Subst.ty_substitute
@@ -388,7 +396,6 @@ let rec apply_eproj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
           EAdt { variant_id = adt.variant_id; fields = proj_fields }
       | VBottom, _ -> [%craise] span "Unreachable"
       | VBorrow bc, TRef (r, ref_ty, kind, _view) ->
-          (* TODO(view): Add view support. *)
           if
             (* Check if the region is in the set of projected regions (note that
              * we never project over static regions) *)
@@ -410,42 +417,52 @@ let rec apply_eproj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
                 [%craise] span
                   "Can't apply a proj_borrow over a reserved mutable borrow"
             | VPartialBorrow pbs, _ ->
-                EBorrow
-                  (EPartialBorrow
-                     (List.map
-                        (fun (pb : partial_borrow) ->
-                          let field_ty =
-                            project_type_by_path span ctx ref_ty pb.path
-                          in
-                          let field_ref_kind =
-                            match pb.content with
-                            | PBShared _ -> RShared
-                            | PBMut _ | PBReservedMut _ -> RMut
-                          in
-                          let field_ref_ty =
-                            TRef (r, field_ty, field_ref_kind, None)
-                          in
-                          let field_ref_ety =
-                            Substitute.erase_regions field_ref_ty
-                          in
-                          let borrow_v : tvalue =
+                (* Filter and project the partial borrows. Shared borrows
+                   result in EIgnored and are filtered out. *)
+                let projected_pbs =
+                  List.filter_map
+                    (fun (pb : partial_borrow) ->
+                      let field_ty =
+                        project_type_by_path span ctx ref_ty pb.path
+                      in
+                      let field_ref_kind =
+                        match pb.content with
+                        | PBShared _ -> RShared
+                        | PBMut _ | PBReservedMut _ -> RMut
+                      in
+                      let field_ref_ty =
+                        TRef (r, field_ty, field_ref_kind, None)
+                      in
+                      let field_ref_ety =
+                        Substitute.erase_regions field_ref_ty
+                      in
+                      let borrow_v : tvalue =
+                        {
+                          value = VBorrow (pbc_to_bc pb.content);
+                          ty = field_ref_ety;
+                        }
+                      in
+                      let projected =
+                        apply_eproj_borrows span check_symbolic_no_ended ctx
+                          regions borrow_v field_ref_ty
+                      in
+                      match projected.value with
+                      | EBorrow ebc ->
+                          Some
                             {
-                              value = VBorrow (pbc_to_bc pb.content);
-                              ty = field_ref_ety;
+                              Values.path = pb.path;
+                              content = ebc_to_epbc span ebc;
                             }
-                          in
-                          let projected =
-                            apply_eproj_borrows span check_symbolic_no_ended ctx
-                              regions borrow_v field_ref_ty
-                          in
-                          {
-                            Values.path = pb.path;
-                            content =
-                              (match projected.value with
-                              | EBorrow ebc -> ebc_to_epbc span ebc
-                              | _ -> [%craise] span "Unexpected");
-                          })
-                        pbs))
+                      | EIgnored ->
+                          (* Shared borrows are ignored in expression projections. *)
+                          None
+                      | _ -> [%craise] span "Unexpected")
+                    pbs
+                in
+                (* If all partial borrows were filtered out (all shared),
+                   return EIgnored, otherwise return the partial borrow. *)
+                if projected_pbs = [] then EIgnored
+                else EBorrow (EPartialBorrow projected_pbs)
             | _ -> [%craise] span "Unreachable"
           else begin
             (* Not in the set: ignore the borrow, but project the borrowed
@@ -473,42 +490,52 @@ let rec apply_eproj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
                 [%craise] span
                   "Can't apply a proj_borrow over a reserved mutable borrow"
             | VPartialBorrow pbs, _ ->
-                EBorrow
-                  (EPartialBorrow
-                     (List.map
-                        (fun (pb : Values.partial_borrow) ->
-                          let field_ty =
-                            project_type_by_path span ctx ref_ty pb.path
-                          in
-                          let field_ref_kind =
-                            match pb.content with
-                            | PBShared _ -> RShared
-                            | PBMut _ | PBReservedMut _ -> RMut
-                          in
-                          let field_ref_ty =
-                            TRef (r, field_ty, field_ref_kind, None)
-                          in
-                          let field_ref_ety =
-                            Substitute.erase_regions field_ref_ty
-                          in
-                          let borrow_v : tvalue =
+                (* Filter and project the partial borrows. Shared borrows
+                   result in EIgnored and are filtered out. *)
+                let projected_pbs =
+                  List.filter_map
+                    (fun (pb : Values.partial_borrow) ->
+                      let field_ty =
+                        project_type_by_path span ctx ref_ty pb.path
+                      in
+                      let field_ref_kind =
+                        match pb.content with
+                        | PBShared _ -> RShared
+                        | PBMut _ | PBReservedMut _ -> RMut
+                      in
+                      let field_ref_ty =
+                        TRef (r, field_ty, field_ref_kind, None)
+                      in
+                      let field_ref_ety =
+                        Substitute.erase_regions field_ref_ty
+                      in
+                      let borrow_v : tvalue =
+                        {
+                          value = VBorrow (pbc_to_bc pb.content);
+                          ty = field_ref_ety;
+                        }
+                      in
+                      let projected =
+                        apply_eproj_borrows span check_symbolic_no_ended ctx
+                          regions borrow_v field_ref_ty
+                      in
+                      match projected.value with
+                      | EBorrow ebc ->
+                          Some
                             {
-                              value = VBorrow (pbc_to_bc pb.content);
-                              ty = field_ref_ety;
+                              Values.path = pb.path;
+                              content = ebc_to_epbc span ebc;
                             }
-                          in
-                          let projected =
-                            apply_eproj_borrows span check_symbolic_no_ended ctx
-                              regions borrow_v field_ref_ty
-                          in
-                          {
-                            Values.path = pb.path;
-                            content =
-                              (match projected.value with
-                              | EBorrow ebc -> ebc_to_epbc span ebc
-                              | _ -> [%craise] span "Unexpected");
-                          })
-                        pbs))
+                      | EIgnored ->
+                          (* Shared borrows are ignored in expression projections. *)
+                          None
+                      | _ -> [%craise] span "Unexpected")
+                    pbs
+                in
+                (* If all partial borrows were filtered out (all shared),
+                   return EIgnored, otherwise return the partial borrow. *)
+                if projected_pbs = [] then EIgnored
+                else EBorrow (EPartialBorrow projected_pbs)
             | _ -> [%craise] span "Unreachable"
           end
       | VLoan _, _ -> [%craise] span "Unreachable"
