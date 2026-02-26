@@ -4,7 +4,7 @@
 
 struct Pair(i32, i32);
 
-fn conflicting_borrows_46(a: &mut Pair, b: &mut Pair) -> i32 {
+fn conflicting_borrows_35(a: &mut {mut 0, mut 1} Pair, b: &mut {mut 0, mut 1} Pair) -> i32 {
     a.0 += 1;
     a.1 += 1;
     b.0 += 1;
@@ -14,5 +14,5 @@ fn conflicting_borrows_46(a: &mut Pair, b: &mut Pair) -> i32 {
 
 fn main() {
     let mut p = Pair(0, 0);
-    let _ = conflicting_borrows_46(&mut p, &mut p);
+    let _ = conflicting_borrows_35(&mut p, &mut p);
 }

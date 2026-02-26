@@ -37,17 +37,15 @@ let log = Logging.borrows_log
       borrows are taken care of differently. *)
 let end_concrete_borrow_get_borrow_core (span : Meta.span)
     (allowed_abs : AbsId.id option) (l : unique_borrow_id) (ctx : eval_ctx) :
-    ( eval_ctx * (AbsId.id option * g_borrow_content) option,
+    ( eval_ctx * (AbsId.id option * g_borrow_content) list,
       priority_borrow_or_abs )
     result =
   (* We use a reference to communicate the kind of borrow we found, if we
-   * find one *)
-  let replaced_bc : (AbsId.id option * g_borrow_content) option ref =
-    ref None
-  in
-  let set_replaced_bc (abs_id : AbsId.id option) (bc : g_borrow_content) =
-    [%sanity_check] span (Option.is_none !replaced_bc);
-    replaced_bc := Some (abs_id, bc)
+   * find one. This is a list because partial borrows return all their
+   * borrow contents at once. *)
+  let replaced_bcs : (AbsId.id option * g_borrow_content) list ref = ref [] in
+  let add_replaced_bc (abs_id : AbsId.id option) (bc : g_borrow_content) =
+    replaced_bcs := (abs_id, bc) :: !replaced_bcs
   in
   (* Raise an exception if:
      - there are outer borrows
@@ -110,7 +108,7 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
               (* Check if there are outer borrows or if we are inside an abstraction *)
               raise_if_priority outer None;
               (* Register the update *)
-              set_replaced_bc outer.abs_id (Concrete bc);
+              add_replaced_bc outer.abs_id (Concrete bc);
               (* Update the value *)
               VBottom)
             else super#visit_VBorrow outer bc
@@ -120,7 +118,7 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
               (* Check if there are outer borrows or if we are inside an abstraction *)
               raise_if_priority outer (Some bv);
               (* Register the update *)
-              set_replaced_bc outer.abs_id (Concrete bc);
+              add_replaced_bc outer.abs_id (Concrete bc);
               (* Update the value *)
               VBottom)
             else
@@ -128,49 +126,52 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
                in case we haven't dived into a borrow/loan yet. *)
               let outer = update_outer_borrow outer (MutBorrow l') in
               VBorrow (super#visit_VMutBorrow outer l' bv)
-        | VPartialBorrow pbs -> (
+        | VPartialBorrow pbs ->
             (* Check if the borrow we are looking for is in the partial borrow. *)
-            let rec find_and_remove acc = function
-              | [] -> None
+            let rec has_target = function
+              | [] -> false
               | (pb : partial_borrow) :: rest ->
-                  let matches, borrowed_value_opt =
+                  let matches =
                     match (pb.content, l) with
-                    | PBShared (_, sid), UShared l' when sid = l' -> (true, None)
-                    | PBMut (bid, bv), UMut l' when bid = l' -> (true, Some bv)
-                    | PBReservedMut (_, sid), UShared l' when sid = l' ->
-                        (true, None)
-                    | _ -> (false, None)
+                    | PBShared (_, sid), UShared l' when sid = l' -> true
+                    | PBMut (bid, _), UMut l' when bid = l' -> true
+                    | PBReservedMut (_, sid), UShared l' when sid = l' -> true
+                    | _ -> false
                   in
-                  if matches then
-                    Some (pb, borrowed_value_opt, List.rev_append acc rest)
-                  else find_and_remove (pb :: acc) rest
+                  if matches then true else has_target rest
             in
-            match find_and_remove [] pbs with
-            | Some (pb, borrowed_value_opt, remaining) ->
-                (* Found the borrow we are looking for. *)
-                raise_if_priority outer borrowed_value_opt;
-                (* Register the update. *)
-                set_replaced_bc outer.abs_id (Concrete (pbc_to_bc pb.content));
-                if remaining = [] then VBottom
-                else VBorrow (VPartialBorrow remaining)
-            | None ->
-                (* Borrow not found directly, explore the mutable borrow values
-                   for nested borrows. *)
-                let new_pbs =
-                  List.map
-                    (fun (pb : partial_borrow) ->
-                      match pb.content with
-                      | PBMut (bid, bv) ->
-                          (* Update outer borrows and explore the borrowed value. *)
-                          let outer =
-                            update_outer_borrow outer (MutBorrow bid)
-                          in
-                          let bv' = super#visit_tvalue outer bv in
-                          { pb with content = PBMut (bid, bv') }
-                      | _ -> pb)
-                    pbs
-                in
-                VBorrow (VPartialBorrow new_pbs))
+            if has_target pbs then (
+              (* Found the borrow we are looking for.
+                 Partial borrows are atomic. We need to end ALL borrows at once. *)
+              (* Check priority for any mutable borrows. *)
+              List.iter
+                (fun (pb : partial_borrow) ->
+                  match pb.content with
+                  | PBMut (_, bv) -> raise_if_priority outer (Some bv)
+                  | _ -> raise_if_priority outer None)
+                pbs;
+              (* Register ALL borrow contents for giving back. *)
+              List.iter
+                (fun (pb : partial_borrow) ->
+                  add_replaced_bc outer.abs_id (Concrete (pbc_to_bc pb.content)))
+                pbs;
+              VBottom)
+            else
+              (* Borrow not found directly, explore the mutable borrow values
+                 for nested borrows. *)
+              let new_pbs =
+                List.map
+                  (fun (pb : partial_borrow) ->
+                    match pb.content with
+                    | PBMut (bid, bv) ->
+                        (* Update outer borrows and explore the borrowed value. *)
+                        let outer = update_outer_borrow outer (MutBorrow bid) in
+                        let bv' = super#visit_tvalue outer bv in
+                        { pb with content = PBMut (bid, bv') }
+                    | _ -> pb)
+                  pbs
+              in
+              VBorrow (VPartialBorrow new_pbs)
 
       (** We reimplement {!visit_ALoan} because we may have to update the outer
           borrows *)
@@ -227,7 +228,7 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
                * abstraction *)
               raise_if_priority outer None;
               (* Register the update *)
-              set_replaced_bc outer.abs_id (Abstract bc);
+              add_replaced_bc outer.abs_id (Abstract bc);
               (* Update the value - note that we are necessarily in the second
                  of the two cases described above *)
               ABorrow AEndedSharedBorrow)
@@ -248,7 +249,7 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
                    * abstraction *)
                   raise_if_priority outer None;
                   (* Register the update *)
-                  set_replaced_bc outer.abs_id (Abstract bc);
+                  add_replaced_bc outer.abs_id (Abstract bc);
                   (* Update the value - note that we are necessarily in the second
                    * of the two cases described above *)
                   let asb = remove_borrow_from_asb span l asb in
@@ -283,20 +284,20 @@ let end_concrete_borrow_get_borrow_core (span : Meta.span)
     let ctx =
       visitor#visit_eval_ctx { abs_id = None; borrow_loan = None } ctx
     in
-    Ok (ctx, !replaced_bc)
+    Ok (ctx, !replaced_bcs)
   with FoundPriority outers -> Error outers
 
 (** See [end_borrow_get_borrow] *)
 let end_concrete_borrow_get_borrow (span : Meta.span) (l : unique_borrow_id)
     (ctx : eval_ctx) :
-    ( eval_ctx * (AbsId.id option * g_borrow_content) option,
+    ( eval_ctx * (AbsId.id option * g_borrow_content) list,
       priority_borrow_or_abs )
     result =
   end_concrete_borrow_get_borrow_core span None l ctx
 
 let end_concrete_borrow_in_abs_get_borrow (span : Meta.span) (abs_id : abs_id)
     (l : unique_borrow_id) (ctx : eval_ctx) :
-    ( eval_ctx * (AbsId.id option * g_borrow_content) option,
+    ( eval_ctx * (AbsId.id option * g_borrow_content) list,
       priority_borrow_or_abs )
     result =
   end_concrete_borrow_get_borrow_core span (Some abs_id) l ctx
@@ -958,7 +959,7 @@ let rec end_borrow_aux (config : config) (span : Meta.span)
           (* Sanity check *)
           check ctx;
           (ctx, end_abs))
-  | Ok (ctx, None) ->
+  | Ok (ctx, []) ->
       [%ltrace "borrow not found"];
       (* It is possible that we can't find a borrow in symbolic mode (ending
        * an abstraction may end several borrows at once *)
@@ -966,16 +967,38 @@ let rec end_borrow_aux (config : config) (span : Meta.span)
       (* Do a sanity check and continue *)
       check ctx;
       (ctx, fun e -> e)
-  (* We found a borrow and replaced it with [Bottom]: give it back (i.e., update
-     the corresponding loan) *)
-  | Ok (ctx, Some (_, bc)) ->
-      (* Sanity check: the borrowed value shouldn't contain loans *)
-      (match bc with
-      | Concrete (VMutBorrow (_, bv)) ->
-          [%sanity_check] span (Option.is_none (get_first_loan_in_value bv))
-      | _ -> ());
-      (* Give back the value *)
-      let ctx = give_back_concrete span l bc ctx in
+  (* We found borrows and replaced them with [Bottom]: give them back (i.e.,
+     update the corresponding loans). This handles both single borrows and
+     partial borrows (which return all their borrow contents at once). *)
+  | Ok (ctx, bcs) ->
+      (* Helper to extract the unique borrow id from a borrow content. *)
+      let bc_to_unique_borrow_id (bc : g_borrow_content) : unique_borrow_id =
+        match bc with
+        | Concrete (VMutBorrow (bid, _)) -> UMut bid
+        | Concrete (VSharedBorrow (_, sid) | VReservedMutBorrow (_, sid)) ->
+            UShared sid
+        | Concrete (VPartialBorrow _) | Abstract _ ->
+            [%craise] span "Unexpected borrow content"
+      in
+      (* Sanity check: the borrowed values shouldn't contain loans. *)
+      List.iter
+        (fun (_, bc) ->
+          match bc with
+          | Concrete (VMutBorrow (_, bv)) ->
+              [%sanity_check] span (Option.is_none (get_first_loan_in_value bv))
+          | _ -> ())
+        bcs;
+      (* Give back all the values.
+         For mutable borrows, this updates the corresponding mutable loan.
+         For shared borrows, this does nothing directly, the loan will be
+         ended lazily when Write/Move access is needed. *)
+      let ctx =
+        List.fold_left
+          (fun ctx (_, bc) ->
+            let loan_id = bc_to_unique_borrow_id bc in
+            give_back_concrete span loan_id bc ctx)
+          ctx bcs
+      in
       (* Do a sanity check and continue *)
       check ctx;
       (* Save a snapshot of the environment for the name generation *)
@@ -1523,6 +1546,16 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
       [%ltrace
         "found borrow content: "
         ^ borrow_content_to_string ~span:(Some span) ctx bc];
+      (* Helper to give back a single borrow content. *)
+      let give_back_bc ctx (bc : borrow_content) =
+        match bc with
+        | VSharedBorrow _ | VReservedMutBorrow _ -> ctx
+        | VMutBorrow (bid, v) ->
+            (* Give the value back - note that the mut borrow was below a
+             * shared borrow: the value is thus unchanged *)
+            give_back_value span bid v ctx
+        | VPartialBorrow _ -> [%craise] span "Unexpected: nested partial borrow"
+      in
       let ctx =
         match bc with
         | VSharedBorrow (_, sid) -> (
@@ -1532,45 +1565,53 @@ and end_abstraction_borrows (config : config) (span : Meta.span)
                 ctx
             with
             | Error _ -> [%craise] span "Unreachable"
-            | Ok (ctx, _) -> ctx)
+            | Ok (ctx, bcs) ->
+                List.fold_left
+                  (fun ctx (_, gbc) ->
+                    match gbc with
+                    | Concrete bc -> give_back_bc ctx bc
+                    | Abstract _ -> ctx)
+                  ctx bcs)
         | VMutBorrow (bid, v) -> (
             (* Replace the mut borrow with bottom *)
             match
               end_concrete_borrow_in_abs_get_borrow span abs_id (UMut bid) ctx
             with
             | Error _ -> [%craise] span "Unreachable"
-            | Ok (ctx, _) ->
-                (* Give the value back - note that the mut borrow was below a
-                 * shared borrow: the value is thus unchanged *)
-                give_back_value span bid v ctx)
+            | Ok (ctx, bcs) ->
+                (* If we got more than one borrow back (from a partial borrow),
+                   we need to give back all of them. Otherwise just use the
+                   original value. *)
+                if List.length bcs = 1 then give_back_value span bid v ctx
+                else
+                  List.fold_left
+                    (fun ctx (_, gbc) ->
+                      match gbc with
+                      | Concrete bc -> give_back_bc ctx bc
+                      | Abstract _ -> ctx)
+                    ctx bcs)
         | VReservedMutBorrow _ -> [%craise] span "Unreachable"
-        | VPartialBorrow pbs ->
-            (* End each partial borrow component individually. *)
-            List.fold_left
-              (fun ctx (pb : partial_borrow) ->
-                match pb.content with
-                | PBShared (_, sid) -> (
-                    match
-                      end_concrete_borrow_in_abs_get_borrow span abs_id
-                        (UShared sid) ctx
-                    with
-                    | Error _ -> [%craise] span "Unreachable"
-                    | Ok (ctx, _) -> ctx)
-                | PBMut (bid, bv) -> (
-                    match
-                      end_concrete_borrow_in_abs_get_borrow span abs_id
-                        (UMut bid) ctx
-                    with
-                    | Error _ -> [%craise] span "Unreachable"
-                    | Ok (ctx, _) -> give_back_value span bid bv ctx)
-                | PBReservedMut (_, sid) -> (
-                    match
-                      end_concrete_borrow_in_abs_get_borrow span abs_id
-                        (UShared sid) ctx
-                    with
-                    | Error _ -> [%craise] span "Unreachable"
-                    | Ok (ctx, _) -> ctx))
-              ctx pbs
+        | VPartialBorrow pbs -> (
+            (* End the partial borrow atomically. We just need to call for any
+               one borrow ID and all components will be ended at once. *)
+            let first_id =
+              match (List.hd pbs).content with
+              | PBShared (_, sid) -> UShared sid
+              | PBMut (bid, _) -> UMut bid
+              | PBReservedMut (_, sid) -> UShared sid
+            in
+            match
+              end_concrete_borrow_in_abs_get_borrow span abs_id first_id ctx
+            with
+            | Error _ -> [%craise] span "Unreachable"
+            | Ok (ctx, bcs) ->
+                (* Give back all the borrow contents. *)
+                List.fold_left
+                  (fun ctx (_, gbc) ->
+                    match gbc with
+                    | Concrete bc -> give_back_bc ctx bc
+                    | Abstract _ -> ctx)
+                  ctx bcs)
       in
       (* Reexplore *)
       end_abstraction_borrows config span chain abs_id ctx

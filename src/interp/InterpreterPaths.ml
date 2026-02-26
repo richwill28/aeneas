@@ -59,6 +59,37 @@ type projection_access = {
   lookup_shared_borrows : bool;
 }
 
+let compute_expanded_bottom_adt_value (span : Meta.span) (ctx : eval_ctx)
+    (def_id : TypeDeclId.id) (opt_variant_id : VariantId.id option)
+    (generics : generic_args) : tvalue =
+  [%sanity_check] span (TypesUtils.generic_args_only_erased_regions generics);
+  (* Lookup the definition and check if it is an enumeration - it
+     should be an enumeration if and only if the projection element
+     is a field projection with *some* variant id. Retrieve the list
+     of fields at the same time. *)
+  let def = ctx_lookup_type_decl span ctx def_id in
+  [%sanity_check] span
+    (List.length generics.regions = List.length def.generics.regions);
+  (* Compute the field types *)
+  let field_types =
+    Substitute.type_decl_get_instantiated_field_etypes def opt_variant_id
+      generics
+  in
+  (* Initialize the expanded value *)
+  let fields = List.map (mk_bottom span) field_types in
+  let av = VAdt { variant_id = opt_variant_id; fields } in
+  let ty = TAdt { id = TAdtId def_id; generics } in
+  { value = av; ty }
+
+let compute_expanded_bottom_tuple_value (span : Meta.span)
+    (field_types : ety list) : tvalue =
+  (* Generate the field values *)
+  let fields = List.map (mk_bottom span) field_types in
+  let v = VAdt { variant_id = None; fields } in
+  let generics = TypesUtils.mk_generic_args [] field_types [] [] in
+  let ty = TAdt { id = TTuple; generics } in
+  { value = v; ty }
+
 (* Projects a value with a `projection_elem`. Returns the projected value and a
    continuation that propagates any changes to the projected value back
    to the original one.
@@ -189,9 +220,172 @@ let rec project_value (span : Meta.span) (access : projection_access)
                 fun (ctx, updated) ->
                   let value = VBorrow (VMutBorrow (bid, updated)) in
                   (ctx, { v with value }) )
-        | VPartialBorrow _ ->
-            (* TODO(view): Implement. *)
-            [%craise] span "Partial borrow not supported yet"
+        | VPartialBorrow pbs -> begin
+            let reserved =
+              List.find_opt
+                (fun (pb : partial_borrow) ->
+                  match pb.content with
+                  | PBReservedMut _ -> true
+                  | _ -> false)
+                pbs
+            in
+            match reserved with
+            | Some pb -> (
+                match pb.content with
+                | PBReservedMut (bid, sid) ->
+                    Error (FailReservedMutBorrow (bid, sid))
+                | _ -> [%craise] span "Unreachable")
+            | None ->
+                let has_mut =
+                  List.exists
+                    (fun (pb : partial_borrow) ->
+                      match pb.content with
+                      | PBMut _ -> true
+                      | _ -> false)
+                    pbs
+                in
+                (* TODO(view): Not too sure if these checks are necessary. *)
+                if has_mut && not access.enter_mut_borrows then
+                  Error (FailBorrow bc)
+                else if (not has_mut) && not access.lookup_shared_borrows then
+                  Error (FailBorrow bc)
+                else
+                  (* Reconstruct the full structure from partial borrows.
+                     Extract base type from the reference type. *)
+                  let base_ty =
+                    match v.ty with
+                    | TRef (_, base_ty, _, _) -> base_ty
+                    | _ ->
+                        [%craise] span
+                          "Expected a reference type for partial borrow"
+                  in
+                  (* Create a structure with Bottom for all fields. *)
+                  let bottom_adt =
+                    match base_ty with
+                    | TAdt { id = TAdtId def_id; generics } ->
+                        compute_expanded_bottom_adt_value span ctx def_id None
+                          generics
+                    | TAdt
+                        {
+                          id = TTuple;
+                          generics =
+                            {
+                              regions = [];
+                              types;
+                              const_generics = [];
+                              trait_refs = [];
+                            };
+                        } -> compute_expanded_bottom_tuple_value span types
+                    | _ ->
+                        [%craise] span
+                          "Partial borrow base type must be an ADT or tuple"
+                  in
+                  (* Helper to get field value from a partial borrow. *)
+                  let get_pb_value (pb : partial_borrow) : tvalue =
+                    match pb.content with
+                    | PBShared (bid, _) -> (
+                        match ctx_lookup_loan span ek bid ctx with
+                        | _, Concrete (VSharedLoan (_, sv)) -> sv
+                        | _, Abstract (ASharedLoan (_, _, sv, _)) -> sv
+                        | _ -> [%craise] span "Expected a shared loan")
+                    | PBMut (_, bv) -> bv
+                    | PBReservedMut _ -> [%craise] span "Unreachable"
+                  in
+                  (* Update the bottom ADT with borrowed field values. *)
+                  let reconstructed : tvalue =
+                    List.fold_left
+                      (fun (acc : tvalue) (pb : partial_borrow) ->
+                        let acc_val : value = acc.value in
+                        match pb.path with
+                        | [ field_str ] -> (
+                            let field_idx =
+                              FieldId.of_int (int_of_string field_str)
+                            in
+                            let fv = get_pb_value pb in
+                            match acc_val with
+                            | VAdt adt ->
+                                let fields =
+                                  FieldId.update_nth adt.fields field_idx fv
+                                in
+                                {
+                                  value = VAdt { adt with fields };
+                                  ty = acc.ty;
+                                }
+                            | _ -> [%craise] span "Expected ADT value")
+                        (* TODO(view): Nested paths in partial borrows. *)
+                        | _ ->
+                            [%craise] span
+                              "TODO: nested paths in partial borrows")
+                      bottom_adt pbs
+                  in
+                  (* Create backward function to propagate updates. *)
+                  let backward (ctx, (updated : tvalue)) =
+                    let updated_value : value = updated.value in
+                    (* Extract the updated field values and put them back. *)
+                    let ctx, updated_pbs =
+                      List.fold_left
+                        (fun (ctx, acc_pbs) (pb : partial_borrow) ->
+                          match pb.path with
+                          | [ field_str ] -> (
+                              let field_idx =
+                                FieldId.of_int (int_of_string field_str)
+                              in
+                              let new_fv =
+                                match updated_value with
+                                | VAdt adt -> FieldId.nth adt.fields field_idx
+                                | _ -> [%craise] span "Expected ADT value"
+                              in
+                              match pb.content with
+                              | PBShared (bid, sid) ->
+                                  (* Update the loan in context for shared borrows. *)
+                                  let ctx =
+                                    match ctx_lookup_loan span ek bid ctx with
+                                    | _, Concrete (VSharedLoan (lid, _)) ->
+                                        update_loan span ek lid
+                                          (VSharedLoan (lid, new_fv))
+                                          ctx
+                                    | _, Abstract (ASharedLoan (pm, lid, _, _))
+                                      ->
+                                        let av =
+                                          match
+                                            ctx_lookup_loan span ek lid ctx
+                                          with
+                                          | ( _,
+                                              Abstract
+                                                (ASharedLoan (_, _, _, av)) ) ->
+                                              av
+                                          | _ -> [%craise] span "Unexpected"
+                                        in
+                                        update_aloan span ek lid
+                                          (ASharedLoan (pm, lid, new_fv, av))
+                                          ctx
+                                    | _ ->
+                                        [%craise] span "Expected a shared loan"
+                                  in
+                                  (* Shared borrow content doesn't change. *)
+                                  ( ctx,
+                                    { pb with content = PBShared (bid, sid) }
+                                    :: acc_pbs )
+                              | PBMut (bid, _) ->
+                                  (* Update the borrow content for mut borrows. *)
+                                  ( ctx,
+                                    { pb with content = PBMut (bid, new_fv) }
+                                    :: acc_pbs )
+                              | PBReservedMut _ -> [%craise] span "Unreachable")
+                          (* TODO(view): Nested paths in partial borrows. *)
+                          | _ ->
+                              [%craise] span
+                                "TODO: nested paths in partial borrows")
+                        (ctx, []) pbs
+                    in
+                    let updated_pbs = List.rev updated_pbs in
+                    let new_value : value =
+                      VBorrow (VPartialBorrow updated_pbs)
+                    in
+                    (ctx, ({ value = new_value; ty = v.ty } : tvalue))
+                  in
+                  Ok (None, reconstructed, backward)
+          end
       in
       res
   | _, VLoan lc, _ -> begin
@@ -371,37 +565,6 @@ let write_place (span : Meta.span) (access : access_kind) (p : place)
   match try_write_place span access p nv ctx with
   | Error e -> [%craise] span ("Unreachable: " ^ show_path_fail_kind e)
   | Ok ctx -> ctx
-
-let compute_expanded_bottom_adt_value (span : Meta.span) (ctx : eval_ctx)
-    (def_id : TypeDeclId.id) (opt_variant_id : VariantId.id option)
-    (generics : generic_args) : tvalue =
-  [%sanity_check] span (TypesUtils.generic_args_only_erased_regions generics);
-  (* Lookup the definition and check if it is an enumeration - it
-     should be an enumeration if and only if the projection element
-     is a field projection with *some* variant id. Retrieve the list
-     of fields at the same time. *)
-  let def = ctx_lookup_type_decl span ctx def_id in
-  [%sanity_check] span
-    (List.length generics.regions = List.length def.generics.regions);
-  (* Compute the field types *)
-  let field_types =
-    Substitute.type_decl_get_instantiated_field_etypes def opt_variant_id
-      generics
-  in
-  (* Initialize the expanded value *)
-  let fields = List.map (mk_bottom span) field_types in
-  let av = VAdt { variant_id = opt_variant_id; fields } in
-  let ty = TAdt { id = TAdtId def_id; generics } in
-  { value = av; ty }
-
-let compute_expanded_bottom_tuple_value (span : Meta.span)
-    (field_types : ety list) : tvalue =
-  (* Generate the field values *)
-  let fields = List.map (mk_bottom span) field_types in
-  let v = VAdt { variant_id = None; fields } in
-  let generics = TypesUtils.mk_generic_args [] field_types [] [] in
-  let ty = TAdt { id = TTuple; generics } in
-  { value = v; ty }
 
 (** Auxiliary helper to expand {!Bottom} values.
 
